@@ -34,7 +34,12 @@ function Write-BootStep([string]$step) {
 # WPF will not work and we should bail with a clear message instead of letting
 # XamlReader.Load throw a confusing 'COM error 0x80010108' / hang.
 $apt = [System.Threading.Thread]::CurrentThread.GetApartmentState()
-Write-BootStep ("entered (PSv={0}, apartment={1}, host={2})" -f $PSVersionTable.PSVersion, $apt, $Host.Name)
+$isAdmin = (New-Object System.Security.Principal.WindowsPrincipal(
+    [System.Security.Principal.WindowsIdentity]::GetCurrent())
+).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+Write-BootStep ("entered (PSv={0}, apartment={1}, host={2}, admin={3})" -f `
+    $PSVersionTable.PSVersion, $apt, $Host.Name, $isAdmin)
+
 if ($apt -ne [System.Threading.ApartmentState]::STA) {
     Write-BootStep "FATAL: not running in STA. Restart powershell.exe with -STA."
     Write-Host ''
@@ -46,6 +51,41 @@ if ($apt -ne [System.Threading.ApartmentState]::STA) {
     Write-Host 'Press ENTER to close...' -ForegroundColor DarkGray
     try { [void][Console]::ReadLine() } catch { Start-Sleep -Seconds 30 }
     exit 2
+}
+
+# Admin self-elevation. winws.exe + WinDivert + service start all need admin,
+# so we relaunch ourselves with -Verb RunAs the first time. Bat used to do
+# this but moving it INTO the PS gives us a real error message if UAC fails
+# instead of a vanishing cmd window.
+if (-not $isAdmin) {
+    Write-BootStep 'not admin -- relaunching elevated via Start-Process -Verb RunAs'
+    $exe = (Get-Process -Id $PID).Path
+    if (-not $exe) { $exe = 'powershell.exe' }
+    $argList = @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-STA',
+        '-File', $PSCommandPath
+    )
+    try {
+        Start-Process -FilePath $exe -ArgumentList $argList -Verb RunAs -ErrorAction Stop | Out-Null
+        Write-BootStep 'elevated child started OK; this process exiting'
+        exit 0
+    } catch {
+        Write-BootStep ("FATAL: UAC denied or elevation failed: " + $_.Exception.Message)
+        Write-Host ''
+        Write-Host '=====================================================================' -ForegroundColor Red
+        Write-Host '  codeDPI requires administrator rights to control DPI / WARP.' -ForegroundColor Red
+        Write-Host '  UAC was denied or elevation failed:' -ForegroundColor Yellow
+        Write-Host ('    ' + $_.Exception.Message) -ForegroundColor Yellow
+        Write-Host ''
+        Write-Host '  Try right-clicking start.bat -> Run as administrator.' -ForegroundColor Yellow
+        Write-Host '=====================================================================' -ForegroundColor Red
+        Write-Host ''
+        Write-Host 'Press ENTER to close...' -ForegroundColor DarkGray
+        try { [void][Console]::ReadLine() } catch { Start-Sleep -Seconds 30 }
+        exit 3
+    }
 }
 
 # Top-level safety net: any uncaught error gets logged and shown to the user

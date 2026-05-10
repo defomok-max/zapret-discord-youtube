@@ -1,78 +1,53 @@
 @echo off
-:: codeDPI - All-in-One Launcher.
-:: Backward-compatible alias of start.bat. Self-elevates via UAC, then opens
-:: the minimal chooser by default.
-::   launcher.bat            -> chooser (utils\launcher.chooser.ps1)
-::   launcher.bat gui        -> full WPF launcher (utils\launcher.gui.ps1)
-::   launcher.bat cli        -> console TUI (utils\launcher.ps1)
+:: codeDPI - minimal one-screen launcher.
+:: Bat is intentionally MINIMAL: any failure is captured by the PS chooser
+:: itself. Admin detection / UAC self-elevation now lives inside chooser.ps1.
 ::
-:: New top-level entry point: start.bat (same behavior).
+:: Pass-through (rare):
+::   launcher.bat        -> chooser (default)
+::   launcher.bat gui    -> full WPF launcher (utils\launcher.gui.ps1)
+::   launcher.bat cli    -> console TUI (utils\launcher.ps1)
 
 setlocal EnableExtensions
-
-if /I "%~1"=="admin"     goto run_chooser
-if /I "%~1"=="admin-gui" goto run_gui
-if /I "%~1"=="admin-cli" goto run_cli
-
-set "ELEVATE_ARG=admin"
-if /I "%~1"=="gui" set "ELEVATE_ARG=admin-gui"
-if /I "%~1"=="cli" set "ELEVATE_ARG=admin-cli"
-
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "try { Start-Process -FilePath '%~f0' -ArgumentList '%ELEVATE_ARG%' -Verb RunAs -ErrorAction Stop } catch { Write-Host 'codeDPI: failed to launch elevated window:' $_.Exception.Message -ForegroundColor Red; Write-Host 'If a UAC prompt appeared and you clicked No, just retry and accept it.' -ForegroundColor Yellow; Write-Host ''; Write-Host 'Press ENTER to close this window...' -ForegroundColor DarkGray; [void][Console]::ReadLine(); exit 1 }"
-set "ELEV_ERR=%ERRORLEVEL%"
-if not "%ELEV_ERR%"=="0" (
-    echo.
-    echo codeDPI: elevation failed with code %ELEV_ERR%.
-    pause
-)
-exit /b %ELEV_ERR%
-
-:run_chooser
-set "PS_FILE=%~dp0utils\launcher.chooser.ps1"
-goto run_ps
-
-:run_gui
-set "PS_FILE=%~dp0utils\launcher.gui.ps1"
-goto run_ps
-
-:run_cli
-set "PS_FILE=%~dp0utils\launcher.ps1"
-goto run_ps
-
-:run_ps
 chcp 65001 > nul
 cd /d "%~dp0"
-title codeDPI
+title codeDPI launcher
+
+set "PS_FILE=%~dp0utils\launcher.chooser.ps1"
+if /I "%~1"=="gui" set "PS_FILE=%~dp0utils\launcher.gui.ps1"
+if /I "%~1"=="cli" set "PS_FILE=%~dp0utils\launcher.ps1"
+
 set "LAUNCHER_LOG=%~dp0launcher.log"
->>"%LAUNCHER_LOG%" echo [%DATE% %TIME%] starting "%PS_FILE%"
+>>"%LAUNCHER_LOG%" echo [%DATE% %TIME%] launcher.bat: launching "%PS_FILE%"
 
 if not exist "%PS_FILE%" (
     echo.
     echo codeDPI: launcher script not found:
     echo   "%PS_FILE%"
     echo.
-    echo Make sure you extracted the full archive (with the utils\ folder).
+    echo Distribute the FULL repo (the utils\ folder must sit next to launcher.bat).
     >>"%LAUNCHER_LOG%" echo [%DATE% %TIME%] MISSING %PS_FILE%
+    echo.
     pause
     exit /b 2
 )
 
-:: -STA is REQUIRED -- WPF (XamlReader.Load) needs single-threaded apartment.
-:: Without it powershell.exe defaults to MTA on Win10/11 and the chooser/gui
-:: window silently fails to load (UI stays blank, then exits).
+echo codeDPI launcher: starting %PS_FILE%
+echo (this cmd window stays open; close it after the GUI window exits)
+echo.
+
+:: -STA is REQUIRED for WPF. Self-elevation (UAC prompt) is handled INSIDE
+:: chooser.ps1 so any error is visible right here in this cmd window.
 powershell -NoProfile -ExecutionPolicy Bypass -STA -File "%PS_FILE%"
 set "PS_ERR=%ERRORLEVEL%"
 >>"%LAUNCHER_LOG%" echo [%DATE% %TIME%] exit code %PS_ERR%
 
-:: ALWAYS pause -- never close silently. If the WPF window failed quietly,
-:: this gives the user a chance to read the message and the log path.
 echo.
 if not "%PS_ERR%"=="0" (
     echo =====================================================================
     echo  codeDPI: PowerShell exited with code %PS_ERR%.
-    echo  Script: %PS_FILE%
-    echo  Log:    %LAUNCHER_LOG%
+    echo  Script:  %PS_FILE%
+    echo  Log:     %LAUNCHER_LOG%
     echo =====================================================================
 ) else (
     echo codeDPI: PowerShell exited cleanly. Log: %LAUNCHER_LOG%
