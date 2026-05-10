@@ -68,14 +68,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -STA -File "%PS_FILE%"
 set "PS_ERR=%ERRORLEVEL%"
 >>"%LAUNCHER_LOG%" echo [%DATE% %TIME%] exit code %PS_ERR%
 
+:: ALWAYS pause -- never close silently. If the WPF window failed quietly,
+:: this gives the user a chance to read the message and the log path.
+echo.
 if not "%PS_ERR%"=="0" (
-    echo.
     echo =====================================================================
     echo  codeDPI: PowerShell exited with code %PS_ERR%.
     echo  Script: %PS_FILE%
     echo  Log:    %LAUNCHER_LOG%
     echo =====================================================================
-    echo.
-    pause
+) else (
+    echo codeDPI: PowerShell exited cleanly. Log: %LAUNCHER_LOG%
 )
+echo.
+echo Press any key to close this window...
+pause >nul
 exit /b %PS_ERR%
