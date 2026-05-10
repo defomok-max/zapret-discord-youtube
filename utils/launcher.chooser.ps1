@@ -48,7 +48,7 @@ $Script:Cfg = Read-Config
 $xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="codeDPI" Width="380" Height="320"
+        Title="codeDPI" Width="540" Height="360"
         WindowStartupLocation="CenterScreen"
         ResizeMode="NoResize"
         Background="#1e1e1e"
@@ -60,8 +60,8 @@ $xaml = @'
             <Setter Property="Foreground" Value="#e0e0e0"/>
             <Setter Property="BorderBrush" Value="#3f3f46"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding" Value="12,10"/>
-            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Padding" Value="10,9"/>
+            <Setter Property="FontSize" Value="13"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Margin" Value="4"/>
             <Setter Property="Template">
@@ -92,6 +92,15 @@ $xaml = @'
                 </Setter.Value>
             </Setter>
         </Style>
+        <Style x:Key="StartButton" TargetType="Button" BasedOn="{StaticResource ActionButton}">
+            <Setter Property="Background" Value="#2d6a4f"/>
+            <Setter Property="BorderBrush" Value="#1b4332"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+        <Style x:Key="StopButton" TargetType="Button" BasedOn="{StaticResource ActionButton}">
+            <Setter Property="Background" Value="#793a3a"/>
+            <Setter Property="BorderBrush" Value="#5a2727"/>
+        </Style>
     </Window.Resources>
     <Grid Margin="16">
         <Grid.RowDefinitions>
@@ -110,15 +119,28 @@ $xaml = @'
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
             <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
-            <Button x:Name="btnStart"    Grid.Row="0" Grid.Column="0" Style="{StaticResource ActionButton}" Content="▶  Запустить"/>
-            <Button x:Name="btnStop"     Grid.Row="0" Grid.Column="1" Style="{StaticResource ActionButton}" Content="■  Остановить"/>
-            <Button x:Name="btnSettings" Grid.Row="1" Grid.Column="0" Style="{StaticResource ActionButton}" Content="⚙  Настройки"/>
-            <Button x:Name="btnTest"     Grid.Row="1" Grid.Column="1" Style="{StaticResource ActionButton}" Content="✓  Тест связи"/>
+            <TextBlock Grid.Row="0" Grid.ColumnSpan="3" Margin="4,0,4,4"
+                       Foreground="#999" FontSize="11"
+                       Text="Что запустить — выбери одно из трёх:"/>
+            <Button x:Name="btnStartDpi"  Grid.Row="1" Grid.Column="0" Style="{StaticResource StartButton}"
+                    Content="▶  DPI" ToolTip="Обход блокировок провайдера: YouTube, Discord, Telegram, Meta, X… (winws.exe без WARP)"/>
+            <Button x:Name="btnStartWarp" Grid.Row="1" Grid.Column="1" Style="{StaticResource StartButton}"
+                    Content="▶  WARP+Гео" ToolTip="Обход гео-блоковки: ChatGPT, Claude, Gemini, Cursor, Copilot… (WARP как SOCKS5 + PAC, без winws). WARP ставится автоматически, если его нет."/>
+            <Button x:Name="btnStartAll"  Grid.Row="1" Grid.Column="2" Style="{StaticResource StartButton}"
+                    Content="▶  Всё" ToolTip="DPI + WARP + PAC одним кликом. Самый простой вариант если не знаешь что нужно."/>
+            <Button x:Name="btnStop"     Grid.Row="2" Grid.Column="0" Style="{StaticResource StopButton}"
+                    Content="■  Остановить"/>
+            <Button x:Name="btnSettings" Grid.Row="2" Grid.Column="1" Style="{StaticResource ActionButton}"
+                    Content="⚙  Настройки"/>
+            <Button x:Name="btnTest"     Grid.Row="2" Grid.Column="2" Style="{StaticResource ActionButton}"
+                    Content="✓  Тест связи"/>
         </Grid>
         <TextBlock Grid.Row="2" x:Name="lblFoot" Margin="4,12,4,0" Foreground="#777" FontSize="11"
                    TextAlignment="Center" Text="codeDPI · v1.2.1"/>
@@ -134,10 +156,12 @@ $dot       = Find 'dot'
 $lblStatus = Find 'lblStatus'
 $lblDetail = Find 'lblDetail'
 $lblFoot   = Find 'lblFoot'
-$btnStart  = Find 'btnStart'
-$btnStop   = Find 'btnStop'
-$btnSettings = Find 'btnSettings'
-$btnTest   = Find 'btnTest'
+$btnStartDpi  = Find 'btnStartDpi'
+$btnStartWarp = Find 'btnStartWarp'
+$btnStartAll  = Find 'btnStartAll'
+$btnStop      = Find 'btnStop'
+$btnSettings  = Find 'btnSettings'
+$btnTest      = Find 'btnTest'
 
 $lblFoot.Text = "codeDPI · v$Script:Version"
 
@@ -157,21 +181,25 @@ function Update-Status {
     $warp   = Get-WarpStatus
     $warpUp = $warp.Connected
 
-    $bypass = $dpiUp -or $svcUp
-    if ($bypass -and ($Script:Cfg.warp_autostart -eq '1') -and ($Script:Cfg.geo_routing -eq '1')) {
-        if ($warpUp -and $pacUp -and $pacSrv) {
-            Set-Dot '#2ea043'
-            $lblStatus.Text = 'Активно: DPI + WARP + PAC'
-        } elseif ($warpUp -and $bypass) {
-            Set-Dot '#d29922'
-            $lblStatus.Text = 'Частично: DPI + WARP, без PAC'
-        } else {
-            Set-Dot '#d29922'
-            $lblStatus.Text = 'Запускается...'
-        }
+    $bypass    = $dpiUp -or $svcUp
+    $geoActive = $warpUp -and $pacUp -and $pacSrv
+    $warpOnly  = (-not $bypass) -and $geoActive
+
+    if ($bypass -and $geoActive) {
+        Set-Dot '#2ea043'
+        $lblStatus.Text = 'Активно: DPI + WARP + PAC'
+    } elseif ($bypass -and $warpUp) {
+        Set-Dot '#d29922'
+        $lblStatus.Text = 'Частично: DPI + WARP, без PAC'
+    } elseif ($warpOnly) {
+        Set-Dot '#2ea043'
+        $lblStatus.Text = 'Активно: WARP + PAC (только гео)'
     } elseif ($bypass) {
         Set-Dot '#2ea043'
         $lblStatus.Text = 'Активно: DPI bypass'
+    } elseif ($warpUp) {
+        Set-Dot '#d29922'
+        $lblStatus.Text = 'WARP подключён (PAC не активен)'
     } else {
         Set-Dot '#666666'
         $lblStatus.Text = 'Выключено'
@@ -210,33 +238,43 @@ function With-Busy([scriptblock]$body) {
         if ($Script:Busy) { return }
         $Script:Busy = $true
         try {
-            $btnStart.IsEnabled = $false
-            $btnStop.IsEnabled  = $false
-            $btnTest.IsEnabled  = $false
+            $btnStartDpi.IsEnabled  = $false
+            $btnStartWarp.IsEnabled = $false
+            $btnStartAll.IsEnabled  = $false
+            $btnStop.IsEnabled      = $false
+            $btnTest.IsEnabled      = $false
             & $body
         } catch {
             Show-Toast "Ошибка: $_"
         } finally {
-            $btnStart.IsEnabled = $true
-            $btnStop.IsEnabled  = $true
-            $btnTest.IsEnabled  = $true
+            $btnStartDpi.IsEnabled  = $true
+            $btnStartWarp.IsEnabled = $true
+            $btnStartAll.IsEnabled  = $true
+            $btnStop.IsEnabled      = $true
+            $btnTest.IsEnabled      = $true
             try { Update-Status } catch { }
             $Script:Busy = $false
         }
     }.GetNewClosure()
 }
 
-$btnStart.Add_Click( (With-Busy {
-    $lblDetail.Text = 'Запуск...'
-    $r = Start-Combined $Script:Cfg
-    if ($r.Bypass -and $r.Errors.Count -eq 0) {
+# All three start buttons share the same outcome handling — only the Mode
+# argument changes — so funnel through one helper.
+function Start-WithMode([string]$mode, [string]$busyText) {
+    $lblDetail.Text = $busyText
+    $r = Start-Mode -cfg $Script:Cfg -Mode $mode
+    if ($r.Success -and $r.Errors.Count -eq 0) {
         # silent — status line will reflect the new state.
-    } elseif ($r.Bypass) {
+    } elseif ($r.Success) {
         Show-Toast ("Запущено с предупреждениями:`n`n" + ($r.Errors -join "`n"))
     } else {
         Show-Toast ("Не удалось запустить:`n`n" + ($r.Errors -join "`n"))
     }
-}) )
+}
+
+$btnStartDpi.Add_Click(  (With-Busy { Start-WithMode 'dpi'  'Запуск DPI...' }) )
+$btnStartWarp.Add_Click( (With-Busy { Start-WithMode 'warp' 'Запуск WARP+Гео (при первом разе может ставиться winget)...' }) )
+$btnStartAll.Add_Click(  (With-Busy { Start-WithMode 'all'  'Запуск DPI + WARP...' }) )
 
 $btnStop.Add_Click( (With-Busy {
     $lblDetail.Text = 'Остановка...'

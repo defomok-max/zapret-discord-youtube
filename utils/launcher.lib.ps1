@@ -23,7 +23,7 @@ $Script:PacPath          = Join-Path $UtilsDir  'launcher.pac'
 $Script:PacServerScript  = Join-Path $UtilsDir  'launcher.pacserver.ps1'
 $Script:PacServerPidFile = Join-Path $RepoRoot  'launcher.pac-server.pid'
 $Script:DefaultPacPort   = 27289
-$Script:Version          = '1.2.1'
+$Script:Version          = '1.3.0'
 
 # ============================================================================
 # Service catalogues
@@ -82,10 +82,11 @@ function Write-LauncherLog {
 function Get-DefaultConfig {
     $cfg = [ordered]@{}
     $cfg.strategy        = 'general (FAKE TLS AUTO).bat'
-    $cfg.warp_mode       = 'proxy'
-    $cfg.warp_autostart  = '1'
-    $cfg.geo_routing     = '1'
-    $cfg.pac_port        = "$DefaultPacPort"
+    $cfg.warp_mode          = 'proxy'
+    $cfg.warp_autostart     = '1'
+    $cfg.auto_install_warp  = '1'
+    $cfg.geo_routing        = '1'
+    $cfg.pac_port           = "$DefaultPacPort"
     foreach ($key in $Services.Keys) {
         $cfg["service_$key"] = if ($Services[$key].DefaultOn) { '1' } else { '0' }
     }
@@ -482,6 +483,7 @@ function Install-Warp {
     )
     & winget @wingetArgs 2>&1 | ForEach-Object { Write-LauncherLog $_ 'DarkGray' }
     Write-LauncherLog '' 'White'
+    Reset-WarpStatusCache
     if (Get-WarpCli) {
         Write-LauncherLog 'WARP installed. Registering client (accepts ToS)...' 'Green'
         try { Invoke-WarpCli 'registration' 'new' 2>&1 | Out-Null } catch { }
@@ -490,6 +492,29 @@ function Install-Warp {
     }
     Write-LauncherLog 'Install finished but warp-cli was not detected.' 'Yellow'
     return $false
+}
+
+# Ensures Cloudflare WARP is installed; if missing, kicks off Install-Warp.
+# Caller passes the cfg so we can respect the user's auto_install_warp toggle
+# (default '1' — auto-install). Returns $true once warp-cli is available.
+function Ensure-WarpInstalled([hashtable]$cfg) {
+    $st = Get-WarpStatus -Force
+    if ($st.Installed) { return $true }
+
+    if ($cfg -and $cfg.auto_install_warp -ne '1') {
+        Write-LauncherLog 'WARP is not installed and auto_install_warp=0 — leaving as-is.' 'DarkGray'
+        return $false
+    }
+
+    Write-LauncherLog 'WARP is not installed — installing automatically (winget)...' 'Yellow'
+    $ok = Install-Warp
+    if (-not $ok) {
+        Write-LauncherLog 'Auto-install of WARP failed.' 'Red'
+        return $false
+    }
+    Reset-WarpStatusCache
+    Start-Sleep -Seconds 1
+    return ((Get-WarpStatus -Force).Installed)
 }
 
 function Install-WireGuard {
@@ -600,9 +625,27 @@ function Start-Bypass([hashtable]$cfg) {
 # ============================================================================
 # Combined: zapret + WARP + PAC routing
 # ============================================================================
-function Start-Combined([hashtable]$cfg) {
+#
+# Start-Mode is the unified entry point. Mode selects what to start:
+#   'dpi'  — only zapret (winws.exe). Use when you only need to bypass
+#            ISP-side DPI for YouTube/Discord/Telegram/etc.
+#   'warp' — only Cloudflare WARP + PAC routing. Use when you only need
+#            to bypass server-side geo-blocks for ChatGPT/Claude/Gemini/etc.
+#   'all'  — both layers (the original Start-Combined behavior).
+#
+# When the WARP layer is requested but Cloudflare WARP is not installed yet,
+# Start-Mode auto-installs it via winget — controlled by cfg.auto_install_warp
+# (default '1'). This is what removes the "warp: not installed" footgun.
+function Start-Mode {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [hashtable] $cfg,
+        [Parameter(Mandatory)] [ValidateSet('dpi','warp','all')] [string] $Mode
+    )
+
     $result = @{
         Success      = $false
+        Mode         = $Mode
         Message      = ''
         Bypass       = $false
         Warp         = $false
@@ -611,30 +654,37 @@ function Start-Combined([hashtable]$cfg) {
         DomainCount  = 0
     }
 
-    # 1. Start zapret.
-    $r = Start-Bypass $cfg
-    $result.Bypass  = [bool]$r.Success
-    $result.Message = $r.Message
-    $result.Success = [bool]$r.Success
-    if (-not $r.Success) {
-        $result.Errors.Add("zapret: $($r.Message)") | Out-Null
+    $wantBypass = ($Mode -eq 'dpi'  -or $Mode -eq 'all')
+    $wantWarp   = ($Mode -eq 'warp' -or $Mode -eq 'all')
+
+    # 1. zapret (DPI bypass).
+    if ($wantBypass) {
+        $r = Start-Bypass $cfg
+        $result.Bypass = [bool]$r.Success
+        if (-not $r.Success) {
+            $result.Errors.Add("zapret: $($r.Message)") | Out-Null
+        }
+    } else {
+        # If user picks WARP-only, make sure any leftover winws is stopped so
+        # the status line is honest.
+        Stop-Bypass
     }
 
-    # 2. Optionally start WARP and apply PAC.
-    if ($cfg.warp_autostart -eq '1') {
-        $warp = Get-WarpStatus -Force
-        if (-not $warp.Installed) {
-            Write-LauncherLog 'WARP not installed — skipping WARP autostart and PAC routing.' 'DarkGray'
-            $result.Errors.Add('warp: not installed') | Out-Null
+    # 2. WARP + PAC.
+    if ($wantWarp) {
+        $installed = Ensure-WarpInstalled $cfg
+        if (-not $installed) {
+            $result.Errors.Add('warp: not installed (auto-install failed or disabled)') | Out-Null
         } else {
             try {
                 Set-WarpMode 'proxy'
+                $warp = Get-WarpStatus -Force
                 if (-not $warp.Connected) {
                     Write-LauncherLog 'WARP: connecting (proxy mode 127.0.0.1:40000)...' 'Cyan'
                     Connect-Warp
                 }
-                # Poll up to 6s for Connected — handshake on cold start can take a moment.
-                $deadline = (Get-Date).AddSeconds(6)
+                # Poll up to 8s for Connected — cold-start handshake can take a moment.
+                $deadline = (Get-Date).AddSeconds(8)
                 $now = $warp
                 while ((Get-Date) -lt $deadline) {
                     Start-Sleep -Milliseconds 400
@@ -645,16 +695,18 @@ function Start-Combined([hashtable]$cfg) {
                     $result.Warp = $true
                     Write-LauncherLog 'WARP connected.' 'Green'
                 } else {
-                    $result.Errors.Add('warp: connect did not report Connected within 6s') | Out-Null
-                    Write-LauncherLog 'WARP: connect issued but status not Connected within 6s.' 'Yellow'
+                    $result.Errors.Add('warp: connect did not report Connected within 8s') | Out-Null
+                    Write-LauncherLog 'WARP: connect issued but status not Connected within 8s.' 'Yellow'
                 }
             } catch {
                 $result.Errors.Add("warp: $_") | Out-Null
                 Write-LauncherLog "WARP autostart failed: $_" 'Yellow'
             }
 
-            # PAC routing — only sensible if WARP proxy is up.
-            if ($cfg.geo_routing -eq '1' -and $result.Warp) {
+            # PAC routing — only sensible if WARP proxy is up. WARP-only mode
+            # implies geo routing; in 'all' mode it's gated by cfg.geo_routing.
+            $wantPac = ($Mode -eq 'warp') -or ($cfg.geo_routing -eq '1')
+            if ($wantPac -and $result.Warp) {
                 try {
                     $info = Write-PacFile $cfg
                     $result.DomainCount = $info.DomainCount
@@ -666,23 +718,44 @@ function Start-Combined([hashtable]$cfg) {
                     $result.Errors.Add("pac: $_") | Out-Null
                     Write-LauncherLog "PAC setup failed: $_" 'Yellow'
                 }
-            } elseif ($cfg.geo_routing -eq '1' -and -not $result.Warp) {
+            } elseif ($wantPac -and -not $result.Warp) {
                 Write-LauncherLog 'PAC routing skipped: WARP is not connected.' 'DarkGray'
             }
         }
+    } else {
+        # Mode == 'dpi'. If a previous run had PAC/WARP up, pull them down so
+        # the user sees a consistent state.
+        if (Test-PacEnabled $cfg) { Disable-PacAutoConfig }
+        if (Test-PacServerRunning) { Stop-PacServer }
     }
 
-    # Summary line.
+    # Mode-aware Success: don't fail the WARP-only mode just because zapret
+    # wasn't asked, and vice versa.
+    switch ($Mode) {
+        'dpi'  { $result.Success = $result.Bypass }
+        'warp' { $result.Success = $result.Warp }
+        'all'  { $result.Success = $result.Bypass }
+    }
+
+    # Summary line — only mention layers we actually tried to bring up.
     $parts = @()
-    $parts += $(if ($result.Bypass) { 'zapret OK' } else { 'zapret FAILED' })
-    if ($cfg.warp_autostart -eq '1') {
+    if ($wantBypass) { $parts += $(if ($result.Bypass) { 'zapret OK' } else { 'zapret FAILED' }) }
+    if ($wantWarp)   {
         $parts += $(if ($result.Warp) { 'WARP OK' } else { 'WARP off' })
-        if ($cfg.geo_routing -eq '1') {
+        if (($Mode -eq 'warp') -or ($cfg.geo_routing -eq '1')) {
             $parts += $(if ($result.Pac) { "PAC OK ($($result.DomainCount))" } else { 'PAC off' })
         }
     }
     $result.Message = ($parts -join '   |   ')
     return $result
+}
+
+# Backward-compatible wrapper. Old callers (gui.ps1, launcher.ps1) used to
+# branch on cfg.warp_autostart to decide whether to bring up WARP. Preserve
+# that contract by mapping the toggle to the new Mode parameter.
+function Start-Combined([hashtable]$cfg) {
+    $mode = if ($cfg.warp_autostart -eq '1') { 'all' } else { 'dpi' }
+    return Start-Mode -cfg $cfg -Mode $mode
 }
 
 function Stop-Combined([hashtable]$cfg) {
