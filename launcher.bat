@@ -58,7 +58,10 @@ if not exist "%PS_FILE%" (
     exit /b 2
 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_FILE%"
+:: -STA is REQUIRED -- WPF (XamlReader.Load) needs single-threaded apartment.
+:: Without it powershell.exe defaults to MTA on Win10/11 and the chooser/gui
+:: window silently fails to load (UI stays blank, then exits).
+powershell -NoProfile -ExecutionPolicy Bypass -STA -File "%PS_FILE%"
 set "PS_ERR=%ERRORLEVEL%"
 >>"%LAUNCHER_LOG%" echo [%DATE% %TIME%] exit code %PS_ERR%
 
