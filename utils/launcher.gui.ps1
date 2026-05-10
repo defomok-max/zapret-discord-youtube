@@ -159,10 +159,13 @@ $xamlText = @'
               <TextBlock Text="Strategy:" VerticalAlignment="Center" Margin="0,0,8,0"/>
               <ComboBox x:Name="cmbStrategy"/>
             </DockPanel>
+            <TextBlock Style="{StaticResource Hint}" Text="Старт в трёх вариантах: только DPI (обход провайдера), только WARP+Гео (ChatGPT/Claude…), или всё сразу."/>
             <StackPanel Orientation="Horizontal">
-              <Button x:Name="btnStart"        Content="▶ Start bypass"   Background="#2d6a4f"/>
-              <Button x:Name="btnStop"         Content="■ Stop bypass"    Background="#793a3a"/>
-              <Button x:Name="btnInstallSvc"   Content="Install as Windows service…"/>
+              <Button x:Name="btnStartDpi"    Content="▶ Старт DPI"            Background="#2d6a4f"/>
+              <Button x:Name="btnStartWarp"   Content="▶ Старт WARP+Гео"      Background="#2d6a4f"/>
+              <Button x:Name="btnStartAll"    Content="▶ Старт Всё (DPI+WARP)"  Background="#1b4332" FontWeight="SemiBold"/>
+              <Button x:Name="btnStop"        Content="■ Stop"                  Background="#793a3a"/>
+              <Button x:Name="btnInstallSvc"  Content="Install as Windows service…"/>
             </StackPanel>
           </StackPanel>
         </Border>
@@ -173,8 +176,9 @@ $xamlText = @'
             <TextBlock Text="Cloudflare WARP" Style="{StaticResource SectionTitle}"/>
             <TextBlock Style="{StaticResource Hint}" Text="Free, no signup. Run by Cloudflare. Gives you a different exit IP. Used here to reach services that geo-block RU IPs. Auto-start can chain WARP onto every Start bypass click."/>
             <TextBlock x:Name="lblWarpStatus" Margin="0,0,0,8" Foreground="#a0a4ad"/>
-            <CheckBox x:Name="chkWarpAutostart" Content="Auto-start WARP when starting bypass (proxy mode + PAC routing)"/>
-            <CheckBox x:Name="chkGeoRouting"    Content="Apply PAC routing for geo-blocked services (system AutoConfigURL)"/>
+            <CheckBox x:Name="chkWarpAutostart"  Content="Auto-start WARP when starting bypass (proxy mode + PAC routing)"/>
+            <CheckBox x:Name="chkAutoInstallWarp" Content="Авто-устанавливать WARP через winget, если он не найден (включается при Старт WARP/Всё)"/>
+            <CheckBox x:Name="chkGeoRouting"     Content="Apply PAC routing for geo-blocked services (system AutoConfigURL)"/>
             <DockPanel Margin="0,8,0,8">
               <TextBlock Text="Manual mode:" VerticalAlignment="Center" Margin="0,0,8,0"/>
               <ComboBox x:Name="cmbWarpMode" Width="160">
@@ -271,9 +275,10 @@ $Script:pnlGeo            = Find 'pnlGeo'
 $Script:cmbStrategy       = Find 'cmbStrategy'
 $Script:cmbWarpMode       = Find 'cmbWarpMode'
 $Script:lblWarpStatus     = Find 'lblWarpStatus'
-$Script:lblWgStatus       = Find 'lblWgStatus'
-$Script:chkWarpAutostart  = Find 'chkWarpAutostart'
-$Script:chkGeoRouting     = Find 'chkGeoRouting'
+$Script:lblWgStatus         = Find 'lblWgStatus'
+$Script:chkWarpAutostart    = Find 'chkWarpAutostart'
+$Script:chkAutoInstallWarp  = Find 'chkAutoInstallWarp'
+$Script:chkGeoRouting       = Find 'chkGeoRouting'
 
 # ============================================================================
 # Logging — sink writes to txtLog
@@ -364,8 +369,13 @@ foreach ($it in $Script:cmbWarpMode.Items) {
 }
 
 # Auto-start toggles
-$Script:chkWarpAutostart.IsChecked = ($Script:Cfg.warp_autostart -eq '1')
-$Script:chkGeoRouting.IsChecked    = ($Script:Cfg.geo_routing    -eq '1')
+$Script:chkWarpAutostart.IsChecked    = ($Script:Cfg.warp_autostart    -eq '1')
+$Script:chkAutoInstallWarp.IsChecked  = ($Script:Cfg.auto_install_warp -eq '1')
+$Script:chkGeoRouting.IsChecked       = ($Script:Cfg.geo_routing       -eq '1')
+$Script:chkAutoInstallWarp.Add_Click({
+    $Script:Cfg.auto_install_warp = if ($this.IsChecked) { '1' } else { '0' }
+    Save-Config $Script:Cfg
+})
 $Script:chkWarpAutostart.Add_Click({
     $Script:Cfg.warp_autostart = if ($this.IsChecked) { '1' } else { '0' }
     Save-Config $Script:Cfg
@@ -453,16 +463,15 @@ function With-BypassBusy([scriptblock]$body) {
     return {
         if ($Script:Busy) { return }
         $Script:Busy = $true
-        $btnA = Find 'btnStart'; $btnB = Find 'btnStop'
+        $btnNames = @('btnStartDpi', 'btnStartWarp', 'btnStartAll', 'btnStop')
+        $btns = foreach ($n in $btnNames) { Find $n }
         try {
-            $btnA.IsEnabled = $false
-            $btnB.IsEnabled = $false
+            foreach ($b in $btns) { if ($b) { $b.IsEnabled = $false } }
             & $body
         } catch {
             Write-LauncherLog "ERROR: $_" 'Red'
         } finally {
-            $btnA.IsEnabled = $true
-            $btnB.IsEnabled = $true
+            foreach ($b in $btns) { if ($b) { $b.IsEnabled = $true } }
             try { Update-Status } catch { }
             $Script:Busy = $false
         }
@@ -470,15 +479,19 @@ function With-BypassBusy([scriptblock]$body) {
 }
 
 # ---- Bypass ----
-(Find 'btnStart').Add_Click( (With-BypassBusy {
-    Write-LauncherLog 'Starting...' 'Yellow'
-    $r = Start-Combined $Script:Cfg
-    $col = if ($r.Bypass) { if ($r.Errors.Count -eq 0) { 'Green' } else { 'Yellow' } } else { 'Red' }
+function Run-StartMode([string]$mode) {
+    Write-LauncherLog ("Starting (mode={0})..." -f $mode) 'Yellow'
+    $r = Start-Mode -cfg $Script:Cfg -Mode $mode
+    $col = if ($r.Success) { if ($r.Errors.Count -eq 0) { 'Green' } else { 'Yellow' } } else { 'Red' }
     Write-LauncherLog $r.Message $col
     if ($r.Errors.Count -gt 0) {
         foreach ($e in $r.Errors) { Write-LauncherLog "  $e" 'DarkYellow' }
     }
-}) )
+}
+
+(Find 'btnStartDpi' ).Add_Click( (With-BypassBusy { Run-StartMode 'dpi'  }) )
+(Find 'btnStartWarp').Add_Click( (With-BypassBusy { Run-StartMode 'warp' }) )
+(Find 'btnStartAll' ).Add_Click( (With-BypassBusy { Run-StartMode 'all'  }) )
 
 (Find 'btnStop').Add_Click( (With-BypassBusy {
     Write-LauncherLog 'Stopping...' 'Yellow'
