@@ -14,16 +14,42 @@
 
 $ErrorActionPreference = 'Stop'
 
+# Breadcrumb-style progress logging. We write a line at every major boot step
+# so launcher.log shows exactly how far the chooser got even if the WPF window
+# silently fails to appear (which is the original "black flash" symptom).
+$Script:LogPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'launcher.log'
+function Write-BootStep([string]$step) {
+    try {
+        $line = "[{0}] chooser> {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $step
+        Add-Content -LiteralPath $Script:LogPath -Value $line -Encoding UTF8
+    } catch { }
+}
+
+# Apartment-state sanity check. If powershell.exe was launched without -STA,
+# WPF will not work and we should bail with a clear message instead of letting
+# XamlReader.Load throw a confusing 'COM error 0x80010108' / hang.
+$apt = [System.Threading.Thread]::CurrentThread.GetApartmentState()
+Write-BootStep ("entered (PSv={0}, apartment={1}, host={2})" -f $PSVersionTable.PSVersion, $apt, $Host.Name)
+if ($apt -ne [System.Threading.ApartmentState]::STA) {
+    Write-BootStep "FATAL: not running in STA. Restart powershell.exe with -STA."
+    Write-Host ''
+    Write-Host '=====================================================================' -ForegroundColor Red
+    Write-Host '  codeDPI chooser cannot start: PowerShell is in MTA mode.' -ForegroundColor Red
+    Write-Host '  Re-run via start.bat (it passes -STA), or:' -ForegroundColor Yellow
+    Write-Host '    powershell -NoProfile -ExecutionPolicy Bypass -STA -File "utils\launcher.chooser.ps1"' -ForegroundColor Yellow
+    Write-Host '=====================================================================' -ForegroundColor Red
+    Write-Host 'Press ENTER to close...' -ForegroundColor DarkGray
+    try { [void][Console]::ReadLine() } catch { Start-Sleep -Seconds 30 }
+    exit 2
+}
+
 # Top-level safety net: any uncaught error gets logged and shown to the user
 # instead of silently closing the cmd window before they can read it.
 trap {
     $err = $_
     $msg = "$($err.Exception.GetType().Name): $($err.Exception.Message)"
-    try {
-        $logPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'launcher.log'
-        $line = "[{0}] chooser FATAL: {1}`n{2}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg, $err.ScriptStackTrace
-        Add-Content -LiteralPath $logPath -Value $line -Encoding UTF8
-    } catch { }
+    Write-BootStep ("FATAL: " + $msg)
+    try { Add-Content -LiteralPath $Script:LogPath -Value $err.ScriptStackTrace -Encoding UTF8 } catch { }
     Write-Host ''
     Write-Host '=====================================================================' -ForegroundColor Red
     Write-Host '  codeDPI chooser — FATAL ERROR' -ForegroundColor Red
@@ -38,12 +64,15 @@ trap {
     exit 1
 }
 
+Write-BootStep 'loading WPF assemblies'
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
 
+Write-BootStep 'sourcing launcher.lib.ps1'
 . (Join-Path $PSScriptRoot 'launcher.lib.ps1')
 $Script:Cfg = Read-Config
+Write-BootStep ("config loaded ({0} keys)" -f $Script:Cfg.Count)
 
 $xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -148,8 +177,11 @@ $xaml = @'
 </Window>
 '@
 
+Write-BootStep 'parsing XAML'
 $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
+Write-BootStep 'building WPF window via XamlReader.Load'
 $Script:window = [Windows.Markup.XamlReader]::Load($reader)
+Write-BootStep 'WPF window built'
 function Find($name) { $Script:window.FindName($name) }
 
 $dot       = Find 'dot'
@@ -311,4 +343,6 @@ $btnTest.Add_Click( (With-Busy {
 # ============================================================================
 # Show window
 # ============================================================================
+Write-BootStep 'showing main window (ShowDialog)'
 [void]$Script:window.ShowDialog()
+Write-BootStep 'main window closed cleanly'
