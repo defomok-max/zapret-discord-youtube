@@ -23,7 +23,7 @@ $Script:PacPath          = Join-Path $UtilsDir  'launcher.pac'
 $Script:PacServerScript  = Join-Path $UtilsDir  'launcher.pacserver.ps1'
 $Script:PacServerPidFile = Join-Path $RepoRoot  'launcher.pac-server.pid'
 $Script:DefaultPacPort   = 27289
-$Script:Version          = '1.2.0'
+$Script:Version          = '1.2.1'
 
 # ============================================================================
 # Service catalogues
@@ -263,18 +263,68 @@ function Test-PacServerRunning {
 }
 
 function Stop-PacServer {
+    $procId = 0
     if (Test-Path -LiteralPath $PacServerPidFile) {
+        try { $procId = [int](Get-Content -LiteralPath $PacServerPidFile -Raw).Trim() } catch { $procId = 0 }
+    }
+    if ($procId -gt 0) {
         try {
-            $procId = [int](Get-Content -LiteralPath $PacServerPidFile -Raw).Trim()
-            if ($procId -gt 0) {
-                $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
-                if ($proc) {
-                    Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+            $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
+            if ($proc) {
+                Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+                # Wait for actual exit so subsequent rebind doesn't race.
+                $deadline = (Get-Date).AddSeconds(2)
+                while ((Get-Date) -lt $deadline) {
+                    if (-not (Get-Process -Id $procId -ErrorAction SilentlyContinue)) { break }
+                    Start-Sleep -Milliseconds 80
                 }
             }
         } catch { }
-        Remove-Item -LiteralPath $PacServerPidFile -ErrorAction SilentlyContinue
     }
+    Remove-Item -LiteralPath $PacServerPidFile -ErrorAction SilentlyContinue
+}
+
+function Test-PortInUse([int]$port) {
+    $tcp = $null
+    try {
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $task = $tcp.ConnectAsync('127.0.0.1', $port)
+        return ($task.Wait(300) -and $tcp.Connected)
+    } catch {
+        return $false
+    } finally {
+        if ($tcp) { try { $tcp.Close() } catch { } }
+    }
+}
+
+function Wait-PacServerReady([int]$port, [int]$timeoutMs = 3000) {
+    # Probe the listener with raw HTTP — works on PS5.1 (Windows) and pwsh on
+    # Linux without the Invoke-WebRequest stream-buffering quirk.
+    $deadline = (Get-Date).AddMilliseconds($timeoutMs)
+    while ((Get-Date) -lt $deadline) {
+        $tcp = $null
+        try {
+            $tcp = New-Object System.Net.Sockets.TcpClient
+            $task = $tcp.ConnectAsync('127.0.0.1', $port)
+            if ($task.Wait(500) -and $tcp.Connected) {
+                $stream = $tcp.GetStream()
+                $stream.ReadTimeout  = 1500
+                $stream.WriteTimeout = 1500
+                $req = "GET /launcher.pac HTTP/1.0`r`nHost: 127.0.0.1`r`nConnection: close`r`n`r`n"
+                $bytes = [Text.Encoding]::ASCII.GetBytes($req)
+                $stream.Write($bytes, 0, $bytes.Length)
+                $stream.Flush()
+                $reader = New-Object System.IO.StreamReader($stream, [Text.Encoding]::UTF8)
+                $body = $reader.ReadToEnd()
+                if ($body -match 'FindProxyForURL') { return $true }
+            }
+        } catch { }
+        finally {
+            if ($tcp) { try { $tcp.Close() } catch { } }
+        }
+        Start-Sleep -Milliseconds 120
+    }
+    return $false
 }
 
 function Start-PacServer([hashtable]$cfg) {
@@ -287,12 +337,31 @@ function Start-PacServer([hashtable]$cfg) {
         Write-PacFile $cfg | Out-Null
     }
     $port = Get-PacPort $cfg
-    $args = @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass',
-              '-File', $PacServerScript, '-PacPath', $PacPath, '-Port', $port)
-    $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -WindowStyle Hidden -PassThru
-    if (-not $proc) { throw 'Failed to start PAC server.' }
+    # If the configured port is occupied by something OTHER than us (since we
+    # just stopped our previous server), refuse to silently fight it.
+    if (Test-PortInUse $port) {
+        throw "PAC port $port is already in use. Change pac_port in launcher.conf or stop the conflicting service."
+    }
+
+    # Avoid clobbering the automatic $args variable.
+    $psArgs = @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass',
+                '-File', $PacServerScript, '-PacPath', $PacPath, '-Port', $port)
+    $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $psArgs -WindowStyle Hidden -PassThru
+    if (-not $proc) { throw 'Failed to spawn PAC server process.' }
+
     Set-Content -LiteralPath $PacServerPidFile -Value $proc.Id -Encoding ASCII
-    Start-Sleep -Milliseconds 400
+
+    # Probe the listener instead of a blind sleep — detect bind failures fast.
+    if (-not (Wait-PacServerReady -port $port -timeoutMs 3000)) {
+        # Listener never came up — clean up the orphan process + PID file.
+        try {
+            $alive = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue
+            if ($alive) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+        } catch { }
+        Remove-Item -LiteralPath $PacServerPidFile -ErrorAction SilentlyContinue
+        throw "PAC server failed to start on port $port within 3s."
+    }
+
     return @{ Port = $port; Pid = $proc.Id; Url = "http://127.0.0.1:$port/launcher.pac" }
 }
 
@@ -325,11 +394,10 @@ function Test-PacEnabled([hashtable]$cfg) {
 # Cloudflare WARP
 # ============================================================================
 function Get-WarpCli {
-    foreach ($p in @(
-        (Join-Path ${env:ProgramFiles} 'Cloudflare\Cloudflare WARP\warp-cli.exe'),
-        (Join-Path ${env:ProgramFiles(x86)} 'Cloudflare\Cloudflare WARP\warp-cli.exe')
-    )) {
-        if ($p -and (Test-Path $p)) { return $p }
+    foreach ($base in @(${env:ProgramFiles}, ${env:ProgramFiles(x86)})) {
+        if (-not $base) { continue }
+        $p = Join-Path $base 'Cloudflare\Cloudflare WARP\warp-cli.exe'
+        if (Test-Path $p) { return $p }
     }
     $cmd = Get-Command 'warp-cli.exe' -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
@@ -343,13 +411,33 @@ function Invoke-WarpCli {
     & $exe @ArgList 2>&1
 }
 
+# warp-cli status spawns a process and can take 50-300ms per call. The status
+# updater fires every 3s, so we cache the result with a short TTL.
+$Script:WarpStatusCache       = $null
+$Script:WarpStatusCacheExpiry = [datetime]::MinValue
+
 function Get-WarpStatus {
+    param([switch]$Force)
+    if (-not $Force -and $Script:WarpStatusCache -and (Get-Date) -lt $Script:WarpStatusCacheExpiry) {
+        return $Script:WarpStatusCache
+    }
     $exe = Get-WarpCli
-    if (-not $exe) { return @{ Installed=$false; Connected=$false; Mode='unknown'; Raw='' } }
-    $out = ''
-    try { $out = (& $exe 'status' 2>&1) -join "`n" } catch { $out = "$_" }
-    $connected = ($out -match '(?im)^\s*Status(?:\s+update)?\s*:\s*(Connected|Connecting)\b')
-    @{ Installed=$true; Connected=$connected; Raw=$out }
+    if (-not $exe) {
+        $st = @{ Installed=$false; Connected=$false; Mode='unknown'; Raw='' }
+    } else {
+        $out = ''
+        try { $out = (& $exe 'status' 2>&1) -join "`n" } catch { $out = "$_" }
+        $connected = ($out -match '(?im)^\s*Status(?:\s+update)?\s*:\s*(Connected|Connecting)\b')
+        $st = @{ Installed=$true; Connected=$connected; Raw=$out }
+    }
+    $Script:WarpStatusCache       = $st
+    $Script:WarpStatusCacheExpiry = (Get-Date).AddSeconds(5)
+    return $st
+}
+
+function Reset-WarpStatusCache {
+    $Script:WarpStatusCache       = $null
+    $Script:WarpStatusCacheExpiry = [datetime]::MinValue
 }
 
 function Set-WarpMode([string]$mode) {
@@ -369,10 +457,12 @@ function Set-WarpMode([string]$mode) {
 
 function Connect-Warp {
     Invoke-WarpCli 'connect' | Out-Null
+    Reset-WarpStatusCache
 }
 
 function Disconnect-Warp {
     Invoke-WarpCli 'disconnect' | Out-Null
+    Reset-WarpStatusCache
 }
 
 function Install-Warp {
@@ -413,11 +503,10 @@ function Install-WireGuard {
 # WireGuard / system proxy
 # ============================================================================
 function Get-WireGuardExe {
-    foreach ($p in @(
-        (Join-Path ${env:ProgramFiles} 'WireGuard\wireguard.exe'),
-        (Join-Path ${env:ProgramFiles(x86)} 'WireGuard\wireguard.exe')
-    )) {
-        if ($p -and (Test-Path $p)) { return $p }
+    foreach ($base in @(${env:ProgramFiles}, ${env:ProgramFiles(x86)})) {
+        if (-not $base) { continue }
+        $p = Join-Path $base 'WireGuard\wireguard.exe'
+        if (Test-Path $p) { return $p }
     }
     return $null
 }
@@ -472,10 +561,13 @@ function Get-SystemProxyStatus {
 # Bypass control
 # ============================================================================
 function Stop-Bypass {
-    if (Test-WinwsRunning) {
-        Get-Process -Name 'winws' -ErrorAction SilentlyContinue |
-            Stop-Process -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Milliseconds 500
+    if (-not (Test-WinwsRunning)) { return }
+    Get-Process -Name 'winws' -ErrorAction SilentlyContinue |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+    # Wait for actual exit — Stop-Process is async. Up to 2s.
+    $deadline = (Get-Date).AddSeconds(2)
+    while ((Test-WinwsRunning) -and ((Get-Date) -lt $deadline)) {
+        Start-Sleep -Milliseconds 100
     }
 }
 
@@ -526,7 +618,7 @@ function Start-Combined([hashtable]$cfg) {
 
     # 2. Optionally start WARP and apply PAC.
     if ($cfg.warp_autostart -eq '1') {
-        $warp = Get-WarpStatus
+        $warp = Get-WarpStatus -Force
         if (-not $warp.Installed) {
             Write-LauncherLog 'WARP not installed — skipping WARP autostart and PAC routing.' 'DarkGray'
             $result.Errors.Add('warp: not installed') | Out-Null
@@ -536,15 +628,21 @@ function Start-Combined([hashtable]$cfg) {
                 if (-not $warp.Connected) {
                     Write-LauncherLog 'WARP: connecting (proxy mode 127.0.0.1:40000)...' 'Cyan'
                     Connect-Warp
-                    Start-Sleep -Seconds 1
                 }
-                $now = Get-WarpStatus
+                # Poll up to 6s for Connected — handshake on cold start can take a moment.
+                $deadline = (Get-Date).AddSeconds(6)
+                $now = $warp
+                while ((Get-Date) -lt $deadline) {
+                    Start-Sleep -Milliseconds 400
+                    $now = Get-WarpStatus -Force
+                    if ($now.Connected) { break }
+                }
                 if ($now.Connected) {
                     $result.Warp = $true
                     Write-LauncherLog 'WARP connected.' 'Green'
                 } else {
-                    $result.Errors.Add('warp: connect did not report Connected') | Out-Null
-                    Write-LauncherLog 'WARP: connect command returned but status is not Connected yet.' 'Yellow'
+                    $result.Errors.Add('warp: connect did not report Connected within 6s') | Out-Null
+                    Write-LauncherLog 'WARP: connect issued but status not Connected within 6s.' 'Yellow'
                 }
             } catch {
                 $result.Errors.Add("warp: $_") | Out-Null
@@ -597,7 +695,7 @@ function Stop-Combined([hashtable]$cfg) {
         Write-LauncherLog 'PAC server stopped.' 'DarkGray'
     }
 
-    $warp = Get-WarpStatus
+    $warp = Get-WarpStatus -Force
     if ($warp.Installed -and $warp.Connected) {
         try { Disconnect-Warp; Write-LauncherLog 'WARP disconnected.' 'DarkGray' } catch { }
     }

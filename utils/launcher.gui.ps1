@@ -403,18 +403,50 @@ $Script:timer.Interval = [TimeSpan]::FromSeconds(3)
 $Script:timer.Add_Tick({ try { Update-Status } catch { } })
 $Script:timer.Start()
 
+# Stop the timer cleanly when the window is closed; otherwise the dispatcher
+# keeps the process alive in some PS hosts.
+$Script:window.Add_Closed({
+    try { if ($Script:timer) { $Script:timer.Stop() } } catch { }
+})
+
 # ============================================================================
 # Button wiring
 # ============================================================================
+$Script:Busy = $false
 function Catch-Click([scriptblock]$body) {
     return {
+        if ($Script:Busy) { return }
+        $Script:Busy = $true
         try { & $body } catch { Write-LauncherLog "ERROR: $_" 'Red' }
         try { Update-Status } catch { }
+        $Script:Busy = $false
+    }.GetNewClosure()
+}
+
+# Wrap an action so the bypass buttons are disabled while it runs — prevents
+# double-clicks from racing Start/Stop or a long warp-cli call.
+function With-BypassBusy([scriptblock]$body) {
+    return {
+        if ($Script:Busy) { return }
+        $Script:Busy = $true
+        $btnA = Find 'btnStart'; $btnB = Find 'btnStop'
+        try {
+            $btnA.IsEnabled = $false
+            $btnB.IsEnabled = $false
+            & $body
+        } catch {
+            Write-LauncherLog "ERROR: $_" 'Red'
+        } finally {
+            $btnA.IsEnabled = $true
+            $btnB.IsEnabled = $true
+            try { Update-Status } catch { }
+            $Script:Busy = $false
+        }
     }.GetNewClosure()
 }
 
 # ---- Bypass ----
-(Find 'btnStart').Add_Click( (Catch-Click {
+(Find 'btnStart').Add_Click( (With-BypassBusy {
     Write-LauncherLog 'Starting...' 'Yellow'
     $r = Start-Combined $Script:Cfg
     $col = if ($r.Bypass) { if ($r.Errors.Count -eq 0) { 'Green' } else { 'Yellow' } } else { 'Red' }
@@ -424,7 +456,7 @@ function Catch-Click([scriptblock]$body) {
     }
 }) )
 
-(Find 'btnStop').Add_Click( (Catch-Click {
+(Find 'btnStop').Add_Click( (With-BypassBusy {
     Write-LauncherLog 'Stopping...' 'Yellow'
     Stop-Combined $Script:Cfg
     Write-LauncherLog 'Stopped.' 'Green'
