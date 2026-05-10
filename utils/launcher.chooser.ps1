@@ -19,6 +19,11 @@ $ErrorActionPreference = 'Stop'
 # silently fails to appear (which is the original "black flash" symptom).
 $Script:LogPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'launcher.log'
 function Write-BootStep([string]$step) {
+    $stamp = Get-Date -Format 'HH:mm:ss'
+    # Print to console so the user sees progress in the cmd window even if
+    # the WPF stage fails. The bat ALWAYS pauses, so they will be able to
+    # read this even when no window appears.
+    try { Write-Host ("[{0}] chooser> {1}" -f $stamp, $step) -ForegroundColor DarkGray } catch { }
     try {
         $line = "[{0}] chooser> {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $step
         Add-Content -LiteralPath $Script:LogPath -Value $line -Encoding UTF8
