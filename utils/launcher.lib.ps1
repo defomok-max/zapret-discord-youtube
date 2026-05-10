@@ -13,14 +13,17 @@ $ErrorActionPreference = 'Stop'
 # ============================================================================
 # Paths
 # ============================================================================
-$Script:UtilsDir   = $PSScriptRoot
-$Script:RepoRoot   = Split-Path -Parent $PSScriptRoot
-$Script:ListsDir   = Join-Path $RepoRoot 'lists'
-$Script:BinDir     = Join-Path $RepoRoot 'bin'
-$Script:CustomDir  = Join-Path $RepoRoot 'custom-vpn'
-$Script:ConfigPath = Join-Path $RepoRoot 'launcher.conf'
-$Script:PacPath    = Join-Path $UtilsDir  'launcher.pac'
-$Script:Version    = '1.1.0'
+$Script:UtilsDir         = $PSScriptRoot
+$Script:RepoRoot         = Split-Path -Parent $PSScriptRoot
+$Script:ListsDir         = Join-Path $RepoRoot 'lists'
+$Script:BinDir           = Join-Path $RepoRoot 'bin'
+$Script:CustomDir        = Join-Path $RepoRoot 'custom-vpn'
+$Script:ConfigPath       = Join-Path $RepoRoot 'launcher.conf'
+$Script:PacPath          = Join-Path $UtilsDir  'launcher.pac'
+$Script:PacServerScript  = Join-Path $UtilsDir  'launcher.pacserver.ps1'
+$Script:PacServerPidFile = Join-Path $RepoRoot  'launcher.pac-server.pid'
+$Script:DefaultPacPort   = 27289
+$Script:Version          = '1.2.0'
 
 # ============================================================================
 # Service catalogues
@@ -82,6 +85,7 @@ function Get-DefaultConfig {
     $cfg.warp_mode       = 'proxy'
     $cfg.warp_autostart  = '1'
     $cfg.geo_routing     = '1'
+    $cfg.pac_port        = "$DefaultPacPort"
     foreach ($key in $Services.Keys) {
         $cfg["service_$key"] = if ($Services[$key].DefaultOn) { '1' } else { '0' }
     }
@@ -235,13 +239,65 @@ function Write-PacFile([hashtable]$cfg) {
     return @{ Path = $PacPath; DomainCount = $domains.Count }
 }
 
-function Get-PacFileUrl {
-    # Cleanest cross-browser way: file:/// URL with normalized slashes.
-    'file:///' + ($PacPath -replace '\\', '/')
+function Get-PacPort([hashtable]$cfg) {
+    $p = 0
+    if ($cfg -and [int]::TryParse([string]$cfg.pac_port, [ref]$p) -and $p -gt 0) { return $p }
+    return $DefaultPacPort
 }
 
-function Enable-PacAutoConfig {
-    $url = Get-PacFileUrl
+function Get-PacFileUrl([hashtable]$cfg) {
+    # Modern Chrome/Edge handle file:// PAC URLs unreliably (depends on version
+    # and security policy). Serve the PAC over a tiny localhost HTTP server
+    # instead — universally supported.
+    $port = Get-PacPort $cfg
+    "http://127.0.0.1:$port/launcher.pac"
+}
+
+function Test-PacServerRunning {
+    if (-not (Test-Path -LiteralPath $PacServerPidFile)) { return $false }
+    $procId = 0
+    try { $procId = [int](Get-Content -LiteralPath $PacServerPidFile -Raw -ErrorAction Stop).Trim() } catch { return $false }
+    if ($procId -le 0) { return $false }
+    $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
+    return [bool]$proc
+}
+
+function Stop-PacServer {
+    if (Test-Path -LiteralPath $PacServerPidFile) {
+        try {
+            $procId = [int](Get-Content -LiteralPath $PacServerPidFile -Raw).Trim()
+            if ($procId -gt 0) {
+                $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
+                if ($proc) {
+                    Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+                }
+            }
+        } catch { }
+        Remove-Item -LiteralPath $PacServerPidFile -ErrorAction SilentlyContinue
+    }
+}
+
+function Start-PacServer([hashtable]$cfg) {
+    Stop-PacServer
+    if (-not (Test-Path -LiteralPath $PacServerScript)) {
+        throw "PAC server script not found: $PacServerScript"
+    }
+    if (-not (Test-Path -LiteralPath $PacPath)) {
+        # Generate placeholder PAC so listener has something to serve immediately.
+        Write-PacFile $cfg | Out-Null
+    }
+    $port = Get-PacPort $cfg
+    $args = @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass',
+              '-File', $PacServerScript, '-PacPath', $PacPath, '-Port', $port)
+    $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -WindowStyle Hidden -PassThru
+    if (-not $proc) { throw 'Failed to start PAC server.' }
+    Set-Content -LiteralPath $PacServerPidFile -Value $proc.Id -Encoding ASCII
+    Start-Sleep -Milliseconds 400
+    return @{ Port = $port; Pid = $proc.Id; Url = "http://127.0.0.1:$port/launcher.pac" }
+}
+
+function Enable-PacAutoConfig([hashtable]$cfg) {
+    $url = Get-PacFileUrl $cfg
     $regKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
     Set-ItemProperty -Path $regKey -Name AutoConfigURL -Value $url
     # Disable static proxy if it was set; AutoConfigURL takes precedence in some
@@ -255,11 +311,14 @@ function Disable-PacAutoConfig {
     try { Remove-ItemProperty -Path $regKey -Name AutoConfigURL -ErrorAction SilentlyContinue } catch { }
 }
 
-function Test-PacEnabled {
+function Test-PacEnabled([hashtable]$cfg) {
     $regKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
     $u = (Get-ItemProperty -Path $regKey -Name AutoConfigURL -ErrorAction SilentlyContinue).AutoConfigURL
     if (-not $u) { return $false }
-    return ($u -ieq (Get-PacFileUrl))
+    if ($cfg) {
+        return ($u -ieq (Get-PacFileUrl $cfg))
+    }
+    return ($u -match '^http://127\.0\.0\.1:\d+/launcher\.pac$')
 }
 
 # ============================================================================
@@ -446,14 +505,31 @@ function Start-Bypass([hashtable]$cfg) {
 # Combined: zapret + WARP + PAC routing
 # ============================================================================
 function Start-Combined([hashtable]$cfg) {
+    $result = @{
+        Success      = $false
+        Message      = ''
+        Bypass       = $false
+        Warp         = $false
+        Pac          = $false
+        Errors       = New-Object System.Collections.Generic.List[string]
+        DomainCount  = 0
+    }
+
     # 1. Start zapret.
     $r = Start-Bypass $cfg
+    $result.Bypass  = [bool]$r.Success
+    $result.Message = $r.Message
+    $result.Success = [bool]$r.Success
+    if (-not $r.Success) {
+        $result.Errors.Add("zapret: $($r.Message)") | Out-Null
+    }
 
     # 2. Optionally start WARP and apply PAC.
     if ($cfg.warp_autostart -eq '1') {
         $warp = Get-WarpStatus
         if (-not $warp.Installed) {
-            Write-LauncherLog 'WARP not installed — skipping WARP autostart.' 'DarkGray'
+            Write-LauncherLog 'WARP not installed — skipping WARP autostart and PAC routing.' 'DarkGray'
+            $result.Errors.Add('warp: not installed') | Out-Null
         } else {
             try {
                 Set-WarpMode 'proxy'
@@ -462,30 +538,145 @@ function Start-Combined([hashtable]$cfg) {
                     Connect-Warp
                     Start-Sleep -Seconds 1
                 }
-                if ($cfg.geo_routing -eq '1') {
-                    $info = Write-PacFile $cfg
-                    Enable-PacAutoConfig | Out-Null
-                    Write-LauncherLog "PAC routing: $($info.DomainCount) domains -> WARP, rest direct." 'Cyan'
+                $now = Get-WarpStatus
+                if ($now.Connected) {
+                    $result.Warp = $true
+                    Write-LauncherLog 'WARP connected.' 'Green'
+                } else {
+                    $result.Errors.Add('warp: connect did not report Connected') | Out-Null
+                    Write-LauncherLog 'WARP: connect command returned but status is not Connected yet.' 'Yellow'
                 }
             } catch {
+                $result.Errors.Add("warp: $_") | Out-Null
                 Write-LauncherLog "WARP autostart failed: $_" 'Yellow'
+            }
+
+            # PAC routing — only sensible if WARP proxy is up.
+            if ($cfg.geo_routing -eq '1' -and $result.Warp) {
+                try {
+                    $info = Write-PacFile $cfg
+                    $result.DomainCount = $info.DomainCount
+                    $srv = Start-PacServer $cfg
+                    Enable-PacAutoConfig $cfg | Out-Null
+                    $result.Pac = $true
+                    Write-LauncherLog ("PAC routing on: {0} domain(s) -> WARP, rest direct ({1})." -f $info.DomainCount, $srv.Url) 'Cyan'
+                } catch {
+                    $result.Errors.Add("pac: $_") | Out-Null
+                    Write-LauncherLog "PAC setup failed: $_" 'Yellow'
+                }
+            } elseif ($cfg.geo_routing -eq '1' -and -not $result.Warp) {
+                Write-LauncherLog 'PAC routing skipped: WARP is not connected.' 'DarkGray'
             }
         }
     }
 
-    return $r
+    # Summary line.
+    $parts = @()
+    $parts += $(if ($result.Bypass) { 'zapret OK' } else { 'zapret FAILED' })
+    if ($cfg.warp_autostart -eq '1') {
+        $parts += $(if ($result.Warp) { 'WARP OK' } else { 'WARP off' })
+        if ($cfg.geo_routing -eq '1') {
+            $parts += $(if ($result.Pac) { "PAC OK ($($result.DomainCount))" } else { 'PAC off' })
+        }
+    }
+    $result.Message = ($parts -join '   |   ')
+    return $result
 }
 
 function Stop-Combined([hashtable]$cfg) {
     Stop-Bypass
 
-    if ($cfg.warp_autostart -eq '1') {
-        if (Test-PacEnabled) { Disable-PacAutoConfig; Write-LauncherLog 'PAC routing disabled.' 'DarkGray' }
-        $warp = Get-WarpStatus
-        if ($warp.Installed -and $warp.Connected) {
-            try { Disconnect-Warp; Write-LauncherLog 'WARP disconnected.' 'DarkGray' } catch { }
-        }
+    # Always disable PAC + kill server even if cfg.warp_autostart toggled off
+    # since last Start, otherwise we leak state.
+    if (Test-PacEnabled $cfg) {
+        Disable-PacAutoConfig
+        Write-LauncherLog 'PAC routing disabled (AutoConfigURL removed).' 'DarkGray'
     }
+    if (Test-PacServerRunning) {
+        Stop-PacServer
+        Write-LauncherLog 'PAC server stopped.' 'DarkGray'
+    }
+
+    $warp = Get-WarpStatus
+    if ($warp.Installed -and $warp.Connected) {
+        try { Disconnect-Warp; Write-LauncherLog 'WARP disconnected.' 'DarkGray' } catch { }
+    }
+}
+
+# ============================================================================
+# Connectivity smoke-test
+# ============================================================================
+function Test-Connectivity([hashtable]$cfg) {
+    # Returns @{ Dpi=@{Ok;Detail}; Geo=@{Ok;Detail}; PacServer=@{Ok;Detail}; Warp=@{Ok;Detail} }
+    $r = @{
+        Dpi       = @{ Ok=$false; Detail='not tested' }
+        Geo       = @{ Ok=$false; Detail='not tested' }
+        PacServer = @{ Ok=$false; Detail='not tested' }
+        Warp      = @{ Ok=$false; Detail='not tested' }
+    }
+
+    # PAC server reachable?
+    if (Test-PacServerRunning) {
+        $port = Get-PacPort $cfg
+        try {
+            $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$port/launcher.pac" -UseBasicParsing -TimeoutSec 3
+            if ($resp.StatusCode -eq 200 -and $resp.Content -match 'FindProxyForURL') {
+                $r.PacServer = @{ Ok=$true; Detail="serving on 127.0.0.1:$port ($([Math]::Round($resp.RawContentLength/1024,1)) KB)" }
+            } else {
+                $r.PacServer = @{ Ok=$false; Detail="bad response: $($resp.StatusCode)" }
+            }
+        } catch { $r.PacServer = @{ Ok=$false; Detail="$_" } }
+    } else {
+        $r.PacServer = @{ Ok=$false; Detail='PAC server is not running' }
+    }
+
+    # WARP proxy port (40000) reachable?
+    $warpPing = $false
+    try {
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $task = $tcp.ConnectAsync('127.0.0.1', 40000)
+        if ($task.Wait(2000) -and $tcp.Connected) { $warpPing = $true }
+        $tcp.Close()
+    } catch { }
+    if ($warpPing) {
+        $r.Warp = @{ Ok=$true; Detail='SOCKS5 listener on 127.0.0.1:40000 is up' }
+    } else {
+        $r.Warp = @{ Ok=$false; Detail='no listener on 127.0.0.1:40000 (WARP proxy mode not running)' }
+    }
+
+    # DPI test — direct fetch to youtube. If zapret + winws is OK, this should
+    # return 200/204 even on RU networks. We bypass any system proxy so the
+    # PAC doesn't redirect this to WARP.
+    try {
+        $resp = Invoke-WebRequest -Uri 'https://www.youtube.com/generate_204' `
+                    -UseBasicParsing -TimeoutSec 6 -Proxy $null -MaximumRedirection 0
+        $code = $resp.StatusCode
+        $r.Dpi = @{ Ok=($code -eq 204 -or $code -eq 200); Detail="HTTP $code from youtube.com (direct, zapret path)" }
+    } catch {
+        $r.Dpi = @{ Ok=$false; Detail="direct youtube.com failed: $($_.Exception.Message)" }
+    }
+
+    # Geo test — chatgpt.com via the WARP SOCKS5 proxy (if up).
+    if ($warpPing) {
+        try {
+            $resp = Invoke-WebRequest -Uri 'https://chatgpt.com/' -UseBasicParsing -TimeoutSec 8 `
+                        -Proxy 'http://127.0.0.1:40000' -MaximumRedirection 0
+            $code = $resp.StatusCode
+            $r.Geo = @{ Ok=($code -ge 200 -and $code -lt 500); Detail="HTTP $code from chatgpt.com (via WARP proxy)" }
+        } catch {
+            $msg = $_.Exception.Message
+            # 403 / 451 still indicate we *reached* the server — counts as geo route working.
+            if ($msg -match '\b(403|451)\b') {
+                $r.Geo = @{ Ok=$false; Detail="chatgpt.com still blocks: $msg (WARP exit IP may be flagged)" }
+            } else {
+                $r.Geo = @{ Ok=$false; Detail="chatgpt.com via WARP failed: $msg" }
+            }
+        }
+    } else {
+        $r.Geo = @{ Ok=$false; Detail='skipped (WARP proxy not up)' }
+    }
+
+    return $r
 }
 
 # ============================================================================

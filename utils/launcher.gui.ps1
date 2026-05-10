@@ -213,11 +213,14 @@ $xamlText = @'
         <Border Style="{StaticResource Card}">
           <StackPanel>
             <TextBlock Text="Tools" Style="{StaticResource SectionTitle}"/>
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+              <Button x:Name="btnConnTest"    Content="Run connectivity test"/>
+              <Button x:Name="btnEditCustom"  Content="Edit custom DPI domains"/>
+              <Button x:Name="btnUpdateLists" Content="Update domain lists"/>
+            </StackPanel>
             <StackPanel Orientation="Horizontal">
-              <Button x:Name="btnEditCustom"   Content="Edit custom DPI domains"/>
-              <Button x:Name="btnUpdateLists"  Content="Update domain lists"/>
-              <Button x:Name="btnDiagnostics"  Content="Diagnostics (service.bat)"/>
-              <Button x:Name="btnOpenCli"      Content="Open old CLI launcher"/>
+              <Button x:Name="btnDiagnostics" Content="Diagnostics (service.bat)"/>
+              <Button x:Name="btnOpenCli"     Content="Open old CLI launcher"/>
             </StackPanel>
           </StackPanel>
         </Border>
@@ -306,7 +309,7 @@ foreach ($key in $GeoServices.Keys) {
         $Script:Cfg["geo_$k"] = if ($this.IsChecked) { '1' } else { '0' }
         Save-Config $Script:Cfg
         # If WARP+PAC currently enabled, rebuild on the fly.
-        if (Test-PacEnabled) {
+        if (Test-PacEnabled $Script:Cfg) {
             Write-PacFile $Script:Cfg | Out-Null
             Write-LauncherLog "PAC rebuilt: '$($GeoServices[$k].Name)' -> $(if ($this.IsChecked) { 'ON' } else { 'OFF' })" 'Cyan'
         } else {
@@ -353,6 +356,12 @@ $Script:chkGeoRouting.Add_Click({
 # ============================================================================
 # Status updater (DispatcherTimer)
 # ============================================================================
+# Cached pieces — refreshed on a slower cadence than the status timer to avoid
+# hammering Get-Service every 3 seconds on machines with many services.
+$Script:WgCacheTick    = 0
+$Script:WgInstalledExe = $null
+$Script:WgTunnels      = @()
+
 function Update-Status {
     $bypass = if (Test-WinwsRunning) { 'RUNNING' } else { 'stopped' }
     $svc    = if (Test-ServiceInstalled 'zapret') {
@@ -363,17 +372,26 @@ function Update-Status {
                elseif ($warp.Connected)  { 'connected' }
                else                      { 'disconnected' }
 
-    $pac = Test-PacEnabled
-    $pacStr = if ($pac) { 'PAC active' } else { 'PAC off' }
+    $pac = Test-PacEnabled $Script:Cfg
+    $pacSrv = Test-PacServerRunning
+    $pacStr = if ($pac -and $pacSrv) { 'PAC active' }
+              elseif ($pac)          { 'PAC reg set, server DOWN' }
+              elseif ($pacSrv)       { 'PAC server up (not registered)' }
+              else                   { 'PAC off' }
 
     $Script:lblStatusLine.Text = "Bypass: $bypass   |   Win service: $svc   |   WARP: $warpStr   |   $pacStr"
     $Script:lblWarpStatus.Text = "WARP: $warpStr"
 
-    $wg = Get-WireGuardExe
-    $tunnels = Get-WireGuardTunnels
+    # Refresh WG cache every ~5th tick (~15 sec) — Get-Service can be slow.
+    $Script:WgCacheTick++
+    if ($Script:WgCacheTick -ge 5 -or -not $Script:WgInstalledExe) {
+        $Script:WgInstalledExe = Get-WireGuardExe
+        $Script:WgTunnels      = Get-WireGuardTunnels
+        $Script:WgCacheTick    = 0
+    }
     $proxy = Get-SystemProxyStatus
-    $wgLine = "WireGuard: $(if ($wg) { 'installed' } else { 'NOT installed' })"
-    if ($tunnels) { $wgLine += "   |   tunnels: $($tunnels.Name -join ', ')" }
+    $wgLine = "WireGuard: $(if ($Script:WgInstalledExe) { 'installed' } else { 'NOT installed' })"
+    if ($Script:WgTunnels) { $wgLine += "   |   tunnels: $($Script:WgTunnels.Name -join ', ')" }
     if ($proxy.Enabled) { $wgLine += "   |   system proxy: $($proxy.Server)" }
     if ($proxy.AutoConfigURL) { $wgLine += "   |   AutoConfigURL set" }
     $Script:lblWgStatus.Text = $wgLine
@@ -399,7 +417,11 @@ function Catch-Click([scriptblock]$body) {
 (Find 'btnStart').Add_Click( (Catch-Click {
     Write-LauncherLog 'Starting...' 'Yellow'
     $r = Start-Combined $Script:Cfg
-    Write-LauncherLog $r.Message $(if ($r.Success) { 'Green' } else { 'Red' })
+    $col = if ($r.Bypass) { if ($r.Errors.Count -eq 0) { 'Green' } else { 'Yellow' } } else { 'Red' }
+    Write-LauncherLog $r.Message $col
+    if ($r.Errors.Count -gt 0) {
+        foreach ($e in $r.Errors) { Write-LauncherLog "  $e" 'DarkYellow' }
+    }
 }) )
 
 (Find 'btnStop').Add_Click( (Catch-Click {
@@ -452,10 +474,15 @@ function Catch-Click([scriptblock]$body) {
 # ---- Geo ----
 (Find 'btnGeoRebuild').Add_Click( (Catch-Click {
     $info = Write-PacFile $Script:Cfg
-    if (Test-PacEnabled -or ($Script:Cfg.geo_routing -eq '1' -and $Script:Cfg.warp_autostart -eq '1')) {
-        Enable-PacAutoConfig | Out-Null
+    # If PAC is currently active OR auto-routing is enabled, also (re)start the
+    # localhost server + register AutoConfigURL so changes take effect now.
+    if ((Test-PacEnabled $Script:Cfg) -or ($Script:Cfg.geo_routing -eq '1' -and $Script:Cfg.warp_autostart -eq '1')) {
+        $srv = Start-PacServer $Script:Cfg
+        Enable-PacAutoConfig $Script:Cfg | Out-Null
+        Write-LauncherLog "PAC rebuilt: $($info.DomainCount) domain(s) -> WARP. Serving at $($srv.Url)" 'Green'
+    } else {
+        Write-LauncherLog "PAC rebuilt: $($info.DomainCount) domain(s) (offline; will be served on next Start)" 'Cyan'
     }
-    Write-LauncherLog "PAC rebuilt: $($info.DomainCount) domains -> $($info.Path)" 'Green'
 }) )
 
 (Find 'btnGeoEditCustom').Add_Click( (Catch-Click {
@@ -463,10 +490,13 @@ function Catch-Click([scriptblock]$body) {
 }) )
 
 (Find 'btnGeoCopyUrl').Add_Click( (Catch-Click {
-    $u = Get-PacFileUrl
+    $u = Get-PacFileUrl $Script:Cfg
     [System.Windows.Clipboard]::SetText($u)
     Write-LauncherLog "PAC URL copied to clipboard: $u" 'Cyan'
     Write-LauncherLog "Firefox: about:preferences -> Network Settings -> Automatic proxy configuration URL -> paste." 'DarkGray'
+    if (-not (Test-PacServerRunning)) {
+        Write-LauncherLog 'Note: PAC server is not running yet. Press Start (or Connect WARP) first; otherwise Firefox will fail to load the URL.' 'Yellow'
+    }
 }) )
 
 # ---- Custom VPN ----
@@ -517,6 +547,16 @@ function Catch-Click([scriptblock]$body) {
 (Find 'btnOpenCli').Add_Click( (Catch-Click {
     $bat = Join-Path $RepoRoot 'launcher.bat'
     Start-Process -FilePath 'cmd.exe' -ArgumentList @('/k', "call `"$bat`" admin cli")
+}) )
+(Find 'btnConnTest').Add_Click( (Catch-Click {
+    Write-LauncherLog 'Connectivity smoke-test: probing PAC server, WARP proxy, DPI path (youtube), Geo path (chatgpt via WARP)...' 'Yellow'
+    $t = Test-Connectivity $Script:Cfg
+    foreach ($k in 'PacServer','Warp','Dpi','Geo') {
+        $row = $t[$k]
+        $col = if ($row.Ok) { 'Green' } else { 'Yellow' }
+        $tag = if ($row.Ok) { 'OK' } else { 'FAIL' }
+        Write-LauncherLog ("{0,-10} [{1}] {2}" -f $k, $tag, $row.Detail) $col
+    }
 }) )
 
 (Find 'btnLogClear').Add_Click({ $Script:txtLog.Clear() })

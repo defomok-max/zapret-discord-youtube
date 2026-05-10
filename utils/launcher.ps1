@@ -132,7 +132,7 @@ function Show-GeoMenu([hashtable]$cfg) {
             continue
         }
         if ($c -eq 'U') {
-            Write-Host ('  ' + (Get-PacFileUrl)) -ForegroundColor Cyan
+            Write-Host ('  ' + (Get-PacFileUrl $cfg)) -ForegroundColor Cyan
             Pause-Key
             continue
         }
@@ -143,7 +143,7 @@ function Show-GeoMenu([hashtable]$cfg) {
             $cur = $cfg["geo_$key"] -eq '1'
             $cfg["geo_$key"] = if ($cur) { '0' } else { '1' }
             Save-Config $cfg
-            if (Test-PacEnabled) { Write-PacFile $cfg | Out-Null }
+            if (Test-PacEnabled $cfg) { Write-PacFile $cfg | Out-Null }
         }
     }
 }
@@ -339,7 +339,7 @@ function Show-MainMenu {
         $warp = Get-WarpStatus
         $warpStr = if (-not $warp.Installed) { 'not installed' } elseif ($warp.Connected) { 'CONNECTED' } else { 'installed, off' }
         $warpCol = if ($warp.Connected) { 'Green' } else { 'DarkGray' }
-        $pac = Test-PacEnabled
+        $pac = Test-PacEnabled $cfg
 
         Print-Status 'DPI services:'   (($enabledNames -join ', ')) 'White'
         Print-Status 'Geo services:'   ($(if ($geoNames) { $geoNames -join ', ' } else { '(none)' })) 'White'
@@ -369,6 +369,7 @@ function Show-MainMenu {
         Write-Host '     9. Edit custom DPI domain list'
         Write-Host '    10. Update domain lists from upstream'
         Write-Host '    11. Run diagnostics (via service.bat)'
+        Write-Host '    12. Connectivity smoke-test (DPI + WARP + PAC + Geo)'
         Write-Host ''
         Write-Host '     G. Open WPF GUI'
         Write-Host '     0. Exit'
@@ -392,6 +393,16 @@ function Show-MainMenu {
             '9' { Open-CustomDomains; Pause-Key }
             '10' { Update-Lists; Pause-Key }
             '11' { Run-Diagnostics }
+            '12' {
+                Write-Host '  Running connectivity smoke-test (this takes ~10 seconds)...' -ForegroundColor Yellow
+                $t = Test-Connectivity $cfg
+                foreach ($k in 'PacServer','Warp','Dpi','Geo') {
+                    $row = $t[$k]
+                    $col = if ($row.Ok) { 'Green' } else { 'Yellow' }
+                    Print-Status "$($k):" "$(if ($row.Ok) { 'OK' } else { 'fail' }) — $($row.Detail)" $col
+                }
+                Pause-Key
+            }
             'G' {
                 $gui = Join-Path $UtilsDir 'launcher.gui.ps1'
                 Start-Process powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $gui)
