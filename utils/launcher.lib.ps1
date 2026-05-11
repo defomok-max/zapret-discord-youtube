@@ -615,19 +615,20 @@ function Set-WarpMode([string]$mode) {
     $exe = Get-WarpCli
     if (-not $exe) { throw 'warp-cli не найден.' }
 
-    # warp-cli CLI syntax has changed three times across versions:
-    #   pre-2023:   `warp-cli set-mode <mode>`
-    #   2023:       `warp-cli mode <mode>`
-    #   2024.10+:   `warp-cli mode set <mode>`
-    # We try all three, isolated from $ErrorActionPreference, and stop at the
-    # first one that either (a) returns rc=0, OR (b) produces no "unrecognized
-    # subcommand" error in stderr.
+    # warp-cli CLI syntax has changed across versions. Current (2024.x) is
+    # the simple form; the other two exist for older/newer forks.
+    #   primary (2024 stable):  `warp-cli mode <mode>`
+    #   pre-2023 / some MSI:    `warp-cli set-mode <mode>`
+    #   some niche 2024.10:     `warp-cli mode set <mode>`
+    # Try in that order. Stop at the first attempt that either returns rc=0
+    # OR produces an error that ISN'T "unrecognized subcommand" (= syntax OK,
+    # but mode change itself failed — don't mask that with a later attempt).
     $prev = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     $attempts = @(
-        @{ ArgList = @('mode', 'set', $mode); Label = 'mode set' }
         @{ ArgList = @('mode', $mode);        Label = 'mode' }
         @{ ArgList = @('set-mode', $mode);    Label = 'set-mode' }
+        @{ ArgList = @('mode', 'set', $mode); Label = 'mode set' }
     )
     $lastErr = ''
     $succeeded = $false
@@ -958,43 +959,48 @@ function Start-Mode {
             # Safe to run repeatedly; no-op if already registered.
             try { Register-WarpClient | Out-Null } catch { }
 
+            $modeOk = $false
             try {
                 Set-WarpMode 'proxy'
+                $modeOk = $true
             } catch {
                 $result.Errors.Add("WARP: не удалось выставить режим proxy — $_") | Out-Null
                 Write-LauncherLog "WARP mode error: $_" 'Red'
+                Write-LauncherLog 'Подсказка: откройте Cloudflare WARP из трея, примите ToS, затем попробуйте снова.' 'Yellow'
             }
 
-            try {
-                $warp = Get-WarpStatus -Force
-                if (-not $warp.Connected) {
-                    Write-LauncherLog 'WARP: подключение (proxy mode 127.0.0.1:40000)...' 'Cyan'
-                    $connectOut = Connect-Warp
-                    if ($connectOut) {
-                        foreach ($l in ($connectOut -split "`r?`n")) {
-                            if ($l.Trim()) { Write-LauncherLog "  warp-cli: $($l.Trim())" 'DarkGray' }
+            if ($modeOk) {
+                try {
+                    $warp = Get-WarpStatus -Force
+                    if (-not $warp.Connected) {
+                        Write-LauncherLog 'WARP: подключение (proxy mode 127.0.0.1:40000)...' 'Cyan'
+                        $connectOut = Connect-Warp
+                        if ($connectOut) {
+                            foreach ($l in ($connectOut -split "`r?`n")) {
+                                if ($l.Trim()) { Write-LauncherLog "  warp-cli: $($l.Trim())" 'DarkGray' }
+                            }
                         }
                     }
+                    # Poll up to 12s for Connected — cold-start handshake can take a moment.
+                    $deadline = (Get-Date).AddSeconds(12)
+                    $now = $warp
+                    while ((Get-Date) -lt $deadline) {
+                        Start-Sleep -Milliseconds 500
+                        $now = Get-WarpStatus -Force
+                        if ($now.Connected) { break }
+                    }
+                    if ($now.Connected) {
+                        $result.Warp = $true
+                        Write-LauncherLog 'WARP подключён.' 'Green'
+                    } else {
+                        $rawTail = ($now.Raw -split "`n" | Select-Object -Last 3) -join ' | '
+                        $result.Errors.Add("WARP: статус не Connected за 12 сек. Последний статус: $rawTail") | Out-Null
+                        Write-LauncherLog "WARP: Connected не получен за 12 сек. Статус: $rawTail" 'Yellow'
+                    }
+                } catch {
+                    $result.Errors.Add("WARP connect: $_") | Out-Null
+                    Write-LauncherLog "WARP autostart failed: $_" 'Yellow'
                 }
-                # Poll up to 12s for Connected — cold-start handshake can take a moment.
-                $deadline = (Get-Date).AddSeconds(12)
-                $now = $warp
-                while ((Get-Date) -lt $deadline) {
-                    Start-Sleep -Milliseconds 500
-                    $now = Get-WarpStatus -Force
-                    if ($now.Connected) { break }
-                }
-                if ($now.Connected) {
-                    $result.Warp = $true
-                    Write-LauncherLog 'WARP подключён.' 'Green'
-                } else {
-                    $rawTail = ($now.Raw -split "`n" | Select-Object -Last 3) -join ' | '
-                    $result.Errors.Add("WARP: статус не Connected за 12 сек. Последний статус: $rawTail") | Out-Null
-                    Write-LauncherLog "WARP: Connected не получен за 12 сек. Статус: $rawTail" 'Yellow'
-                }
-            } catch {
-                $result.Errors.Add("WARP connect: $_") | Out-Null
-                Write-LauncherLog "WARP autostart failed: $_" 'Yellow'
             }
 
             # PAC routing — only sensible if WARP proxy is up. WARP-only mode
