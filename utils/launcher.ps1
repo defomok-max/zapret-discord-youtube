@@ -429,7 +429,9 @@ function Show-MainMenu {
             }
             'G' {
                 $gui = Join-Path $UtilsDir 'launcher.gui.ps1'
-                Start-Process powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $gui)
+                # WPF requires -STA. Without it XamlReader.Load throws on some
+                # PS hosts; the GUI would flash and die silently.
+                Start-Process powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', $gui)
                 return
             }
         }

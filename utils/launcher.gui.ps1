@@ -109,10 +109,19 @@ $xamlText = @'
   <DockPanel Margin="14">
 
     <!-- Header -->
-    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
-      <TextBlock Text="zapret all-in-one" FontSize="20" FontWeight="Bold" Foreground="#ffffff"/>
-      <TextBlock x:Name="lblStatusLine" Text="loading..." Foreground="#a0a4ad" FontSize="11" Margin="0,2,0,0"/>
-    </StackPanel>
+    <Border DockPanel.Dock="Top" Margin="0,0,0,10" Padding="14,12" CornerRadius="0">
+      <Border.Background>
+        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+          <GradientStop Color="#1b4332" Offset="0"/>
+          <GradientStop Color="#2d6a4f" Offset="0.5"/>
+          <GradientStop Color="#1b4332" Offset="1"/>
+        </LinearGradientBrush>
+      </Border.Background>
+      <StackPanel>
+        <TextBlock Text="codeDPI — настройки" FontSize="18" FontWeight="Bold" Foreground="#ffffff"/>
+        <TextBlock x:Name="lblStatusLine" Text="loading..." Foreground="#b0d4c0" FontSize="11" Margin="0,3,0,0"/>
+      </StackPanel>
+    </Border>
 
     <!-- Log (bottom) -->
     <Border DockPanel.Dock="Bottom" Style="{StaticResource Card}" Padding="6">

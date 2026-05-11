@@ -116,28 +116,35 @@ Add-Type -AssemblyName WindowsBase
 
 Write-BootStep 'sourcing launcher.lib.ps1'
 . (Join-Path $PSScriptRoot 'launcher.lib.ps1')
+Rotate-LauncherLog
 $Script:Cfg = Read-Config
 Write-BootStep ("config loaded ({0} keys)" -f $Script:Cfg.Count)
 
 $xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="codeDPI" Width="540" Height="360"
+        Title="codeDPI" Width="580" Height="440"
         WindowStartupLocation="CenterScreen"
         ResizeMode="NoResize"
-        Background="#1e1e1e"
+        Background="#181a1f"
         FontFamily="Segoe UI" FontSize="13"
-        Foreground="#e0e0e0">
+        Foreground="#e8e8e8">
     <Window.Resources>
+        <!-- Accent gradient for header bar -->
+        <LinearGradientBrush x:Key="AccentGrad" StartPoint="0,0" EndPoint="1,0">
+            <GradientStop Color="#2d6a4f" Offset="0"/>
+            <GradientStop Color="#1b4332" Offset="1"/>
+        </LinearGradientBrush>
+        <!-- Button base template with rounded corners + hover -->
         <Style x:Key="ActionButton" TargetType="Button">
-            <Setter Property="Background" Value="#2d2d30"/>
-            <Setter Property="Foreground" Value="#e0e0e0"/>
-            <Setter Property="BorderBrush" Value="#3f3f46"/>
+            <Setter Property="Background" Value="#2a2d35"/>
+            <Setter Property="Foreground" Value="#e8e8e8"/>
+            <Setter Property="BorderBrush" Value="#3c3f47"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding" Value="10,9"/>
+            <Setter Property="Padding" Value="14,12"/>
             <Setter Property="FontSize" Value="13"/>
             <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="Margin" Value="4"/>
+            <Setter Property="Margin" Value="5"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -145,21 +152,22 @@ $xaml = @'
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="6">
+                                CornerRadius="8">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
                                               Margin="{TemplateBinding Padding}"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="b" Property="Background" Value="#3a3a3d"/>
+                                <Setter TargetName="b" Property="Background" Value="#363940"/>
+                                <Setter TargetName="b" Property="BorderBrush" Value="#52565e"/>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="b" Property="Background" Value="#252526"/>
+                                <Setter TargetName="b" Property="Background" Value="#1f2127"/>
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
-                                <Setter Property="Foreground" Value="#666"/>
-                                <Setter TargetName="b" Property="Background" Value="#252526"/>
+                                <Setter Property="Foreground" Value="#555"/>
+                                <Setter TargetName="b" Property="Background" Value="#1f2127"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -167,57 +175,102 @@ $xaml = @'
             </Setter>
         </Style>
         <Style x:Key="StartButton" TargetType="Button" BasedOn="{StaticResource ActionButton}">
-            <Setter Property="Background" Value="#2d6a4f"/>
+            <Setter Property="Background" Value="#264d3b"/>
             <Setter Property="BorderBrush" Value="#1b4332"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
         </Style>
         <Style x:Key="StopButton" TargetType="Button" BasedOn="{StaticResource ActionButton}">
-            <Setter Property="Background" Value="#793a3a"/>
-            <Setter Property="BorderBrush" Value="#5a2727"/>
+            <Setter Property="Background" Value="#5c2a2a"/>
+            <Setter Property="BorderBrush" Value="#4a2020"/>
         </Style>
     </Window.Resources>
-    <Grid Margin="16">
+    <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
-        <StackPanel Grid.Row="0" Margin="4,0,4,12">
-            <StackPanel Orientation="Horizontal">
-                <Ellipse x:Name="dot" Width="10" Height="10" Fill="#666" VerticalAlignment="Center"/>
-                <TextBlock x:Name="lblStatus" Text="loading..." Margin="8,0,0,0" FontWeight="SemiBold"/>
-            </StackPanel>
-            <TextBlock x:Name="lblDetail" Text="" FontSize="11" Foreground="#999" Margin="18,2,0,0"/>
-        </StackPanel>
-        <Grid Grid.Row="1">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="*"/>
-            </Grid.ColumnDefinitions>
+
+        <!-- ═══ Header bar ═══ -->
+        <Border Grid.Row="0" Background="{StaticResource AccentGrad}" Padding="20,14" CornerRadius="0,0,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <!-- Status dot with glow -->
+                <Grid Grid.Column="0" VerticalAlignment="Center" Margin="0,0,14,0">
+                    <Ellipse x:Name="dotGlow" Width="22" Height="22" Opacity="0.35">
+                        <Ellipse.Fill>
+                            <RadialGradientBrush>
+                                <GradientStop Color="#666666" Offset="0.3"/>
+                                <GradientStop Color="Transparent" Offset="1"/>
+                            </RadialGradientBrush>
+                        </Ellipse.Fill>
+                    </Ellipse>
+                    <Ellipse x:Name="dot" Width="14" Height="14" Fill="#666666"/>
+                </Grid>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                    <TextBlock x:Name="lblStatus" Text="Загрузка..." FontSize="15" FontWeight="SemiBold" Foreground="#ffffff"/>
+                    <TextBlock x:Name="lblDetail" Text="" FontSize="11" Foreground="#b0d4c0" Margin="0,2,0,0"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ═══ Main content ═══ -->
+        <Grid Grid.Row="1" Margin="20,18,20,10">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
+                <RowDefinition Height="12"/>
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
-            <TextBlock Grid.Row="0" Grid.ColumnSpan="3" Margin="4,0,4,4"
-                       Foreground="#999" FontSize="11"
-                       Text="Что запустить — выбери одно из трёх:"/>
-            <Button x:Name="btnStartDpi"  Grid.Row="1" Grid.Column="0" Style="{StaticResource StartButton}"
-                    Content="▶  DPI" ToolTip="Обход блокировок провайдера: YouTube, Discord, Telegram, Meta, X… (winws.exe без WARP)"/>
-            <Button x:Name="btnStartWarp" Grid.Row="1" Grid.Column="1" Style="{StaticResource StartButton}"
-                    Content="▶  WARP+Гео" ToolTip="Обход гео-блоковки: ChatGPT, Claude, Gemini, Cursor, Copilot… (WARP как SOCKS5 + PAC, без winws). WARP ставится автоматически, если его нет."/>
-            <Button x:Name="btnStartAll"  Grid.Row="1" Grid.Column="2" Style="{StaticResource StartButton}"
-                    Content="▶  Всё" ToolTip="DPI + WARP + PAC одним кликом. Самый простой вариант если не знаешь что нужно."/>
-            <Button x:Name="btnStop"     Grid.Row="2" Grid.Column="0" Style="{StaticResource StopButton}"
-                    Content="■  Остановить"/>
-            <Button x:Name="btnSettings" Grid.Row="2" Grid.Column="1" Style="{StaticResource ActionButton}"
-                    Content="⚙  Настройки"/>
-            <Button x:Name="btnTest"     Grid.Row="2" Grid.Column="2" Style="{StaticResource ActionButton}"
-                    Content="✓  Тест связи"/>
+
+            <TextBlock Grid.Row="0" Margin="6,0,0,6" Foreground="#888" FontSize="11"
+                       Text="Запуск — выбери режим:"/>
+
+            <!-- Start buttons row -->
+            <Grid Grid.Row="1">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Button x:Name="btnStartDpi"  Grid.Column="0" Style="{StaticResource StartButton}"
+                        Content="▶  DPI"
+                        ToolTip="Обход блокировок провайдера: YouTube, Discord, Telegram, Meta, X… (winws.exe без WARP)"/>
+                <Button x:Name="btnStartWarp" Grid.Column="1" Style="{StaticResource StartButton}"
+                        Content="▶  WARP+Гео"
+                        ToolTip="Обход гео-блоковки: ChatGPT, Claude, Gemini, Cursor, Copilot… (WARP SOCKS5 + PAC). WARP ставится автоматически."/>
+                <Button x:Name="btnStartAll"  Grid.Column="2" Style="{StaticResource StartButton}"
+                        Content="▶  Всё"
+                        ToolTip="DPI + WARP + PAC одним кликом. Самый простой вариант."/>
+            </Grid>
+
+            <!-- Separator -->
+            <Rectangle Grid.Row="2" Height="1" Fill="#2e3038" Margin="6,0"/>
+
+            <!-- Action buttons row -->
+            <Grid Grid.Row="3">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Button x:Name="btnStop"     Grid.Column="0" Style="{StaticResource StopButton}"
+                        Content="■  Остановить"/>
+                <Button x:Name="btnSettings" Grid.Column="1" Style="{StaticResource ActionButton}"
+                        Content="⚙  Настройки"/>
+                <Button x:Name="btnTest"     Grid.Column="2" Style="{StaticResource ActionButton}"
+                        Content="✓  Тест связи"/>
+            </Grid>
         </Grid>
-        <TextBlock Grid.Row="2" x:Name="lblFoot" Margin="4,12,4,0" Foreground="#777" FontSize="11"
-                   TextAlignment="Center" Text="codeDPI · v1.2.1"/>
+
+        <!-- ═══ Footer ═══ -->
+        <Border Grid.Row="2" Background="#14161a" Padding="16,8">
+            <TextBlock x:Name="lblFoot" Foreground="#555" FontSize="10.5" TextAlignment="Center"
+                       Text="codeDPI · v1.3.0"/>
+        </Border>
     </Grid>
 </Window>
 '@
@@ -230,6 +283,7 @@ Write-BootStep 'WPF window built'
 function Find($name) { $Script:window.FindName($name) }
 
 $dot       = Find 'dot'
+$dotGlow   = Find 'dotGlow'
 $lblStatus = Find 'lblStatus'
 $lblDetail = Find 'lblDetail'
 $lblFoot   = Find 'lblFoot'
@@ -240,7 +294,7 @@ $btnStop      = Find 'btnStop'
 $btnSettings  = Find 'btnSettings'
 $btnTest      = Find 'btnTest'
 
-$lblFoot.Text = "codeDPI · v$Script:Version"
+$lblFoot.Text = "codeDPI · v$Script:Version · PSv$($PSVersionTable.PSVersion.Major)"
 
 # ============================================================================
 # Status updater
@@ -248,6 +302,11 @@ $lblFoot.Text = "codeDPI · v$Script:Version"
 function Set-Dot([string]$color) {
     $brush = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString($color))
     $dot.Fill = $brush
+    # Update glow ring to match
+    $glowBrush = New-Object System.Windows.Media.RadialGradientBrush
+    $glowBrush.GradientStops.Add((New-Object System.Windows.Media.GradientStop ([System.Windows.Media.ColorConverter]::ConvertFromString($color)), 0.3))
+    $glowBrush.GradientStops.Add((New-Object System.Windows.Media.GradientStop ([System.Windows.Media.Colors]::Transparent), 1.0))
+    $dotGlow.Fill = $glowBrush
 }
 
 function Update-Status {
@@ -360,10 +419,12 @@ $btnStop.Add_Click( (With-Busy {
 
 $btnSettings.Add_Click({
     # Open the full GUI in the same console (admin already), then re-read config.
+    # WPF requires -STA; without it XamlReader.Load throws COM 0x80010108 and
+    # the Settings button silently does nothing on some hosts.
     try {
         $gui = Join-Path $PSScriptRoot 'launcher.gui.ps1'
         $proc = Start-Process -FilePath 'powershell.exe' `
-                    -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $gui) `
+                    -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', $gui) `
                     -PassThru
         $proc.WaitForExit()
         $Script:Cfg = Read-Config

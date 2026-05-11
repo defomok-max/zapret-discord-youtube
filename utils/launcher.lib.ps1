@@ -23,7 +23,7 @@ $Script:PacPath          = Join-Path $UtilsDir  'launcher.pac'
 $Script:PacServerScript  = Join-Path $UtilsDir  'launcher.pacserver.ps1'
 $Script:PacServerPidFile = Join-Path $RepoRoot  'launcher.pac-server.pid'
 $Script:DefaultPacPort   = 27289
-$Script:Version          = '1.3.0'
+$Script:Version          = '1.4.0'
 
 # ============================================================================
 # Service catalogues
@@ -67,6 +67,23 @@ $Script:GeoServices = [ordered]@{
 # Logging — overridable
 # ============================================================================
 $Script:LogSink = $null
+$Script:LauncherLogPath = Join-Path $RepoRoot 'launcher.log'
+
+# Rotate launcher.log if it grows past ~1 MB — we append to it on every
+# command; without rotation it would grow forever on long-running installs.
+function Rotate-LauncherLog {
+    try {
+        if (-not (Test-Path -LiteralPath $Script:LauncherLogPath)) { return }
+        $info = Get-Item -LiteralPath $Script:LauncherLogPath -ErrorAction SilentlyContinue
+        if (-not $info) { return }
+        if ($info.Length -gt 1MB) {
+            $old = "$($Script:LauncherLogPath).old"
+            if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -ErrorAction SilentlyContinue }
+            Move-Item -LiteralPath $Script:LauncherLogPath -Destination $old -ErrorAction SilentlyContinue
+        }
+    } catch { }
+}
+
 function Write-LauncherLog {
     param([string]$Message, [string]$Color = 'White')
     if ($Script:LogSink) {
@@ -126,6 +143,74 @@ function Save-Config([hashtable]$cfg) {
 }
 
 # ============================================================================
+# Registry — Internet Settings (per-user, NOT per-token)
+# ============================================================================
+# When the launcher is elevated via UAC with a DIFFERENT user account
+# ("over-the-shoulder"), HKCU in the elevated session points to the admin's
+# hive — but the browser that actually reads AutoConfigURL lives in the
+# interactive user's hive. Write to the interactive user's hive explicitly.
+#
+# In the common case (same user, just elevated via linked token), interactive
+# SID == current SID and this resolves to plain HKCU anyway.
+$Script:InteractiveUserSid  = $null
+$Script:InteractiveHivePath = $null
+
+function Get-InteractiveUserSid {
+    if ($Script:InteractiveUserSid) { return $Script:InteractiveUserSid }
+    $sid = $null
+    # 1) owner of the user-mode explorer.exe (desktop shell) — most reliable.
+    try {
+        $explorer = Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" `
+                        -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($explorer) {
+            $own = Invoke-CimMethod -InputObject $explorer -MethodName GetOwner `
+                        -ErrorAction SilentlyContinue
+            if ($own -and $own.ReturnValue -eq 0 -and $own.Domain -and $own.User) {
+                try {
+                    $acct = New-Object System.Security.Principal.NTAccount ("$($own.Domain)\$($own.User)")
+                    $sid  = $acct.Translate([System.Security.Principal.SecurityIdentifier]).Value
+                } catch { }
+            }
+        }
+    } catch { }
+    # 2) fallback: owner of the active logon session via WMI.
+    if (-not $sid) {
+        try {
+            $sess = Get-CimInstance Win32_LogonSession -Filter 'LogonType = 2 OR LogonType = 10' `
+                        -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($sess) {
+                $user = Get-CimAssociatedInstance -InputObject $sess -ResultClassName Win32_Account `
+                            -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($user) { $sid = $user.SID }
+            }
+        } catch { }
+    }
+    # 3) last-ditch: own SID.
+    if (-not $sid) {
+        $sid = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
+    }
+    $Script:InteractiveUserSid = $sid
+    return $sid
+}
+
+function Get-InternetSettingsHivePath {
+    if ($Script:InteractiveHivePath) { return $Script:InteractiveHivePath }
+    $mySid = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
+    $intSid = Get-InteractiveUserSid
+    if ($intSid -and $intSid -ne $mySid) {
+        # Different user — write via HKEY_USERS\<SID>. Ensure the hive is mapped
+        # (a logged-in user's hive is always mapped; if not, we fall back).
+        $huPath = "Registry::HKEY_USERS\$intSid\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+        if (Test-Path -LiteralPath $huPath) {
+            $Script:InteractiveHivePath = $huPath
+            return $huPath
+        }
+    }
+    $Script:InteractiveHivePath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+    return $Script:InteractiveHivePath
+}
+
+# ============================================================================
 # Reusable helpers
 # ============================================================================
 function Read-DomainList([string]$path) {
@@ -154,6 +239,10 @@ function Test-ServiceRunning([string]$name) {
 # ============================================================================
 # DPI services -> rewrite list-general-user.txt
 # ============================================================================
+# Apply-Services rewrites lists/list-general-user.txt based on user toggles.
+# It is idempotent: if the result would match what's already on disk, we skip
+# the write. This matters because every checkbox click used to trigger a disk
+# write (and an AV scan on Defender-enabled machines), which was visibly slow.
 function Apply-Services([hashtable]$cfg) {
     $target = Join-Path $ListsDir 'list-general-user.txt'
     $domains = New-Object System.Collections.Generic.List[string]
@@ -170,11 +259,25 @@ function Apply-Services([hashtable]$cfg) {
     $custom = Join-Path $ListsDir 'list-custom.txt'
     foreach ($d in (Read-DomainList $custom)) { $null = $domains.Add($d) }
 
-    if ($domains.Count -eq 0) {
-        Write-Utf8NoBom $target @('domain.example.abc')
+    $desired = if ($domains.Count -eq 0) {
+        @('domain.example.abc')
     } else {
-        Write-Utf8NoBom $target @($domains | Sort-Object -Unique)
+        @($domains | Sort-Object -Unique)
     }
+
+    # Skip the write if the content is already identical — saves ~30-80ms per
+    # call and avoids spurious FS-watch / AV-scan wakeups.
+    if (Test-Path -LiteralPath $target) {
+        try {
+            $current = Get-Content -LiteralPath $target -Encoding UTF8 -ErrorAction Stop
+            if (-not $current) { $current = @() }
+            if (($current.Count -eq $desired.Count) -and
+                (-not (Compare-Object -ReferenceObject $current -DifferenceObject $desired -SyncWindow 0))) {
+                return
+            }
+        } catch { }
+    }
+    Write-Utf8NoBom $target $desired
 }
 
 # ============================================================================
@@ -342,10 +445,25 @@ function Start-PacServer([hashtable]$cfg) {
         Write-PacFile $cfg | Out-Null
     }
     $port = Get-PacPort $cfg
-    # If the configured port is occupied by something OTHER than us (since we
-    # just stopped our previous server), refuse to silently fight it.
+
+    # If the configured port is occupied by something OTHER than us, auto-bump
+    # up to 5 candidate ports before giving up. This avoids the common pain of
+    # "port 27289 already in use" from an earlier orphaned instance AV killed.
     if (Test-PortInUse $port) {
-        throw "PAC port $port is already in use. Change pac_port in launcher.conf or stop the conflicting service."
+        $bumped = $false
+        foreach ($cand in @(27290, 27291, 27292, 27293, 27294)) {
+            if (-not (Test-PortInUse $cand)) {
+                Write-LauncherLog "PAC port $port busy — falling back to $cand." 'Yellow'
+                $port = $cand
+                $cfg.pac_port = "$port"
+                Save-Config $cfg
+                $bumped = $true
+                break
+            }
+        }
+        if (-not $bumped) {
+            throw "PAC port $port is in use and ports 27290-27294 are all busy too. Change pac_port in launcher.conf manually."
+        }
     }
 
     # Avoid clobbering the automatic $args variable.
@@ -372,27 +490,54 @@ function Start-PacServer([hashtable]$cfg) {
 
 function Enable-PacAutoConfig([hashtable]$cfg) {
     $url = Get-PacFileUrl $cfg
-    $regKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+    $regKey = Get-InternetSettingsHivePath
     Set-ItemProperty -Path $regKey -Name AutoConfigURL -Value $url
     # Disable static proxy if it was set; AutoConfigURL takes precedence in some
     # browsers but better to be explicit.
     try { Set-ItemProperty -Path $regKey -Name ProxyEnable -Value 0 -Type DWord -ErrorAction SilentlyContinue } catch { }
+    # Bump WinInet's cache counter so Chrome/Edge pick up the new PAC URL
+    # without needing a restart.
+    try { Invoke-WinInetSettingsChanged } catch { }
     return $url
 }
 
 function Disable-PacAutoConfig {
-    $regKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+    $regKey = Get-InternetSettingsHivePath
     try { Remove-ItemProperty -Path $regKey -Name AutoConfigURL -ErrorAction SilentlyContinue } catch { }
+    try { Invoke-WinInetSettingsChanged } catch { }
 }
 
 function Test-PacEnabled([hashtable]$cfg) {
-    $regKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+    $regKey = Get-InternetSettingsHivePath
     $u = (Get-ItemProperty -Path $regKey -Name AutoConfigURL -ErrorAction SilentlyContinue).AutoConfigURL
     if (-not $u) { return $false }
     if ($cfg) {
         return ($u -ieq (Get-PacFileUrl $cfg))
     }
     return ($u -match '^http://127\.0\.0\.1:\d+/launcher\.pac$')
+}
+
+# WinInet setting-changed broadcast — tells Chrome/Edge/IE to re-read
+# Internet Settings without relaunching. Wrapped in try/catch because on
+# some locked-down hosts InternetSetOption can return ERROR_NOT_SUPPORTED.
+$Script:WinInetSignalType = $null
+function Invoke-WinInetSettingsChanged {
+    if (-not $Script:WinInetSignalType) {
+        $src = @'
+using System;
+using System.Runtime.InteropServices;
+public static class WinInet {
+    [DllImport("wininet.dll", SetLastError=true, CharSet=CharSet.Auto)]
+    public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
+}
+'@
+        try { Add-Type -TypeDefinition $src -ErrorAction Stop; $Script:WinInetSignalType = $true } catch { $Script:WinInetSignalType = $false }
+    }
+    if ($Script:WinInetSignalType) {
+        # INTERNET_OPTION_SETTINGS_CHANGED = 39, INTERNET_OPTION_REFRESH = 37
+        [void][WinInet]::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0)
+        [void][WinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0)
+    }
 }
 
 # ============================================================================
@@ -450,13 +595,17 @@ function Set-WarpMode([string]$mode) {
     if (-not $exe) { throw 'warp-cli not found.' }
     # Some warp-cli versions: `warp-cli set-mode <mode>` (newer).
     # Older: `warp-cli mode <mode>`. Try new first, fall back to old.
-    $err = $null
-    try {
-        & $exe 'set-mode' $mode 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "set-mode exit $LASTEXITCODE" }
-    } catch {
-        $err = $_
-        try { & $exe 'mode' $mode 2>&1 | Out-Null } catch { throw $err }
+    #
+    # Critical: capture exit code BEFORE a pipeline — `| Out-Null` sets
+    # $LASTEXITCODE on some PS hosts, which masked the true exit code before.
+    $out = & $exe 'set-mode' $mode 2>&1
+    $rc  = $LASTEXITCODE
+    if ($rc -ne 0) {
+        $out2 = & $exe 'mode' $mode 2>&1
+        $rc2  = $LASTEXITCODE
+        if ($rc2 -ne 0) {
+            throw ("warp-cli: both 'set-mode' and 'mode' failed (rc=$rc/$rc2). Output: " + (($out + $out2) -join '; '))
+        }
     }
 }
 
@@ -565,21 +714,25 @@ function Stop-WireGuardTunnels {
 
 function Set-SystemProxy([string]$proxy) {
     if (-not $proxy) { throw 'Proxy string required.' }
-    $regKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+    $regKey = Get-InternetSettingsHivePath
     Set-ItemProperty -Path $regKey -Name ProxyServer -Value $proxy
     Set-ItemProperty -Path $regKey -Name ProxyEnable -Value 1 -Type DWord
     Set-ItemProperty -Path $regKey -Name ProxyOverride -Value '<local>'
-    & netsh winhttp set proxy proxy-server="$proxy" bypass-list="<local>" | Out-Null
+    # Use stop-parsing (--%) so cmd-style quoting in $proxy cannot inject flags.
+    $safeProxy = $proxy -replace '"', ''
+    & netsh.exe winhttp set proxy $safeProxy '<local>' | Out-Null
+    try { Invoke-WinInetSettingsChanged } catch { }
 }
 
 function Disable-SystemProxy {
-    $regKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+    $regKey = Get-InternetSettingsHivePath
     Set-ItemProperty -Path $regKey -Name ProxyEnable -Value 0 -Type DWord
-    & netsh winhttp reset proxy | Out-Null
+    & netsh.exe winhttp reset proxy | Out-Null
+    try { Invoke-WinInetSettingsChanged } catch { }
 }
 
 function Get-SystemProxyStatus {
-    $regKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+    $regKey = Get-InternetSettingsHivePath
     $enabled = (Get-ItemProperty -Path $regKey -Name ProxyEnable -ErrorAction SilentlyContinue).ProxyEnable
     $server  = (Get-ItemProperty -Path $regKey -Name ProxyServer -ErrorAction SilentlyContinue).ProxyServer
     $auto    = (Get-ItemProperty -Path $regKey -Name AutoConfigURL -ErrorAction SilentlyContinue).AutoConfigURL
@@ -591,12 +744,25 @@ function Get-SystemProxyStatus {
 # ============================================================================
 function Stop-Bypass {
     if (-not (Test-WinwsRunning)) { return }
+    # First try graceful Stop-Process (sends WM_CLOSE where possible, then
+    # kills). If the process is pinned by a hung WinDivert IOCTL it may refuse
+    # to die — fall back to taskkill /F /T after a short wait.
     Get-Process -Name 'winws' -ErrorAction SilentlyContinue |
         Stop-Process -Force -ErrorAction SilentlyContinue
-    # Wait for actual exit — Stop-Process is async. Up to 2s.
     $deadline = (Get-Date).AddSeconds(2)
     while ((Test-WinwsRunning) -and ((Get-Date) -lt $deadline)) {
         Start-Sleep -Milliseconds 100
+    }
+    if (Test-WinwsRunning) {
+        # Last-ditch — tree-kill. winws normally has no children but the bat
+        # launcher can spawn intermediate cmd.exe which held a handle.
+        try {
+            & taskkill.exe /F /IM winws.exe /T 2>$null | Out-Null
+        } catch { }
+        $deadline = (Get-Date).AddSeconds(2)
+        while ((Test-WinwsRunning) -and ((Get-Date) -lt $deadline)) {
+            Start-Sleep -Milliseconds 120
+        }
     }
 }
 
@@ -613,11 +779,22 @@ function Start-Bypass([hashtable]$cfg) {
     }
 
     Write-LauncherLog "Starting strategy: $($cfg.strategy)" 'Green'
-    & cmd.exe /c "call `"$batPath`""
-    Start-Sleep -Seconds 2
+    # Invoke via cmd.exe so the strategy's own `start "..." /min winws.exe ...`
+    # detaches cleanly. We fire-and-forget (no Wait-Process) — the bat finishes
+    # almost instantly; winws.exe is the thing we actually watch for.
+    $cmdArgs = '/d /c "call "' + $batPath + '""'
+    Start-Process -FilePath $env:ComSpec -ArgumentList $cmdArgs -WindowStyle Hidden -Wait:$false | Out-Null
+
+    # Poll for winws.exe instead of a blind Start-Sleep 2 — usually ready in
+    # ~300ms, but slow disks / AV scan can delay up to a couple of seconds.
+    $deadline = (Get-Date).AddSeconds(6)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-WinwsRunning) { break }
+        Start-Sleep -Milliseconds 120
+    }
 
     if (-not (Test-WinwsRunning)) {
-        return @{ Success=$false; Message='winws.exe did not start. Check the strategy file or run diagnostics.' }
+        return @{ Success=$false; Message='winws.exe did not start within 6s. Check the strategy file or run diagnostics.' }
     }
     return @{ Success=$true; Message="Bypass started: $($cfg.strategy)" }
 }
@@ -820,13 +997,35 @@ function Test-Connectivity([hashtable]$cfg) {
     }
 
     # DPI test — direct fetch to youtube. If zapret + winws is OK, this should
-    # return 200/204 even on RU networks. We bypass any system proxy so the
-    # PAC doesn't redirect this to WARP.
+    # return 200/204 even on RU networks. We MUST bypass any system proxy so
+    # the PAC doesn't redirect this through WARP (which would mask a DPI
+    # failure as "OK"). Invoke-WebRequest -Proxy $null in PS5.1 does NOT reset
+    # WebRequest.DefaultWebProxy — so use HttpWebRequest directly with an
+    # explicit null proxy.
     try {
-        $resp = Invoke-WebRequest -Uri 'https://www.youtube.com/generate_204' `
-                    -UseBasicParsing -TimeoutSec 6 -Proxy $null -MaximumRedirection 0
-        $code = $resp.StatusCode
-        $r.Dpi = @{ Ok=($code -eq 204 -or $code -eq 200); Detail="HTTP $code from youtube.com (direct, zapret path)" }
+        $req = [System.Net.HttpWebRequest]::Create('https://www.youtube.com/generate_204')
+        $req.Proxy = $null
+        $req.AllowAutoRedirect = $false
+        $req.Timeout = 6000
+        $req.ReadWriteTimeout = 6000
+        $req.UserAgent = 'codeDPI-smoketest/1.0'
+        $resp = $req.GetResponse()
+        try {
+            $code = [int]$resp.StatusCode
+            $r.Dpi = @{ Ok=($code -eq 204 -or $code -eq 200); Detail="HTTP $code from youtube.com (direct bypass-proxy)" }
+        } finally { $resp.Close() }
+    } catch [System.Net.WebException] {
+        $we = $_.Exception
+        $status = 0
+        if ($we.Response) {
+            try { $status = [int]([System.Net.HttpWebResponse]$we.Response).StatusCode } catch { }
+            try { $we.Response.Close() } catch { }
+        }
+        if ($status -eq 204 -or $status -eq 200) {
+            $r.Dpi = @{ Ok=$true; Detail="HTTP $status from youtube.com (direct bypass-proxy)" }
+        } else {
+            $r.Dpi = @{ Ok=$false; Detail="direct youtube.com failed: $($we.Message)" }
+        }
     } catch {
         $r.Dpi = @{ Ok=$false; Detail="direct youtube.com failed: $($_.Exception.Message)" }
     }
