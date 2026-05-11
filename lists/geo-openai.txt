@@ -15,3 +15,6 @@ cdn.openai.com
 ab.chatgpt.com
 files.oaiusercontent.com
 videos.openai.com
+browser.chatgpt.com
+ios.chat.openai.com
+android.chat.openai.com

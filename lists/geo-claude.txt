@@ -3,3 +3,5 @@ anthropic.com
 console.anthropic.com
 api.anthropic.com
 claudeusercontent.com
+docs.anthropic.com
+support.anthropic.com

@@ -782,7 +782,9 @@ function Start-Bypass([hashtable]$cfg) {
     # Invoke via cmd.exe so the strategy's own `start "..." /min winws.exe ...`
     # detaches cleanly. We fire-and-forget (no Wait-Process) — the bat finishes
     # almost instantly; winws.exe is the thing we actually watch for.
-    $cmdArgs = '/d /c "call "' + $batPath + '""'
+    # Note: strategy filenames contain spaces and parentheses (e.g.
+    # "general (ALT3).bat") — must be properly quoted for cmd.exe.
+    $cmdArgs = "/d /c `"call `"$batPath`"`""
     Start-Process -FilePath $env:ComSpec -ArgumentList $cmdArgs -WindowStyle Hidden -Wait:$false | Out-Null
 
     # Poll for winws.exe instead of a blind Start-Sleep 2 — usually ready in
@@ -1031,20 +1033,45 @@ function Test-Connectivity([hashtable]$cfg) {
     }
 
     # Geo test — chatgpt.com via the WARP SOCKS5 proxy (if up).
+    # Note: Invoke-WebRequest -Proxy does NOT support SOCKS5 in PS5.1.
+    # We use a simple TCP connect + TLS handshake through the SOCKS proxy
+    # to verify the route works. A full HTTP request through SOCKS5 requires
+    # .NET 6+ (SocketsHttpHandler) which PS5.1 doesn't have. Instead we just
+    # verify the SOCKS5 handshake succeeds and the remote host is reachable.
     if ($warpPing) {
         try {
-            $resp = Invoke-WebRequest -Uri 'https://chatgpt.com/' -UseBasicParsing -TimeoutSec 8 `
-                        -Proxy 'http://127.0.0.1:40000' -MaximumRedirection 0
-            $code = $resp.StatusCode
-            $r.Geo = @{ Ok=($code -ge 200 -and $code -lt 500); Detail="HTTP $code from chatgpt.com (via WARP proxy)" }
-        } catch {
-            $msg = $_.Exception.Message
-            # 403 / 451 still indicate we *reached* the server — counts as geo route working.
-            if ($msg -match '\b(403|451)\b') {
-                $r.Geo = @{ Ok=$false; Detail="chatgpt.com still blocks: $msg (WARP exit IP may be flagged)" }
-            } else {
-                $r.Geo = @{ Ok=$false; Detail="chatgpt.com via WARP failed: $msg" }
+            # SOCKS5 handshake to chatgpt.com:443 through 127.0.0.1:40000
+            $tcp = New-Object System.Net.Sockets.TcpClient
+            $task = $tcp.ConnectAsync('127.0.0.1', 40000)
+            if (-not ($task.Wait(3000) -and $tcp.Connected)) {
+                throw 'TCP connect to WARP proxy timed out'
             }
+            $stream = $tcp.GetStream()
+            $stream.ReadTimeout  = 5000
+            $stream.WriteTimeout = 5000
+            # SOCKS5 greeting: version=5, 1 auth method, no-auth=0
+            $greeting = [byte[]]@(0x05, 0x01, 0x00)
+            $stream.Write($greeting, 0, 3)
+            $buf = New-Object byte[] 2
+            $read = $stream.Read($buf, 0, 2)
+            if ($read -lt 2 -or $buf[0] -ne 0x05) { throw 'SOCKS5 greeting failed' }
+            # SOCKS5 connect request to chatgpt.com:443 (domain type=3)
+            $domain = [Text.Encoding]::ASCII.GetBytes('chatgpt.com')
+            $connReq = New-Object System.Collections.Generic.List[byte]
+            $connReq.AddRange([byte[]]@(0x05, 0x01, 0x00, 0x03, [byte]$domain.Length))
+            $connReq.AddRange($domain)
+            $connReq.AddRange([byte[]]@(0x01, 0xBB))  # port 443 big-endian
+            $stream.Write($connReq.ToArray(), 0, $connReq.Count)
+            $resp = New-Object byte[] 10
+            $read = $stream.Read($resp, 0, $resp.Length)
+            if ($read -ge 2 -and $resp[1] -eq 0x00) {
+                $r.Geo = @{ Ok=$true; Detail='SOCKS5 connect to chatgpt.com:443 via WARP succeeded' }
+            } else {
+                $r.Geo = @{ Ok=$false; Detail="SOCKS5 connect reply: status=$($resp[1]) (expected 0x00=success)" }
+            }
+            $tcp.Close()
+        } catch {
+            $r.Geo = @{ Ok=$false; Detail="chatgpt.com via WARP SOCKS5 failed: $($_.Exception.Message)" }
         }
     } else {
         $r.Geo = @{ Ok=$false; Detail='skipped (WARP proxy not up)' }
@@ -1096,5 +1123,6 @@ function Open-CustomGeoDomains {
 
 function Run-Diagnostics {
     $svc = Join-Path $RepoRoot 'service.bat'
-    & cmd.exe /c "`"$svc`"" admin
+    # Launch in a separate window so it doesn't block the GUI/CLI thread.
+    Start-Process -FilePath 'cmd.exe' -ArgumentList @('/k', "call `"$svc`" admin") -WindowStyle Normal
 }

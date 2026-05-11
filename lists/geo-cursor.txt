@@ -6,3 +6,5 @@ api3.cursor.sh
 api4.cursor.sh
 download.cursor.sh
 download.cursor.com
+www.cursor.com
+marketplace.cursor.com

@@ -4,3 +4,5 @@ redditmedia.com
 redditstatic.com
 redditinc.com
 redgifs.com
+reddit.map.fastly.net
+www.redditstatic.com
