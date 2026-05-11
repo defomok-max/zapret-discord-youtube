@@ -557,8 +557,19 @@ function Get-WarpCli {
 function Invoke-WarpCli {
     param([Parameter(ValueFromRemainingArguments=$true)] [string[]]$ArgList)
     $exe = Get-WarpCli
-    if (-not $exe) { throw 'warp-cli not found.' }
-    & $exe @ArgList 2>&1
+    if (-not $exe) { throw 'warp-cli не найден. Установите Cloudflare WARP с https://1.1.1.1/ или через winget.' }
+    # IMPORTANT: isolate warp-cli's native stderr from $ErrorActionPreference.
+    # With 2>&1 + 'Stop', PowerShell wraps ANY stderr line in a terminating
+    # NativeCommandError, so callers can't see $LASTEXITCODE to fall back on
+    # a different subcommand. We force Continue here so the caller gets the
+    # real output + exit code.
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $exe @ArgList 2>&1
+    } finally {
+        $ErrorActionPreference = $prev
+    }
 }
 
 # warp-cli status spawns a process and can take 50-300ms per call. The status
@@ -575,9 +586,19 @@ function Get-WarpStatus {
     if (-not $exe) {
         $st = @{ Installed=$false; Connected=$false; Mode='unknown'; Raw='' }
     } else {
+        # Isolate from $ErrorActionPreference='Stop' — same reason as Invoke-WarpCli.
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
         $out = ''
         try { $out = (& $exe 'status' 2>&1) -join "`n" } catch { $out = "$_" }
-        $connected = ($out -match '(?im)^\s*Status(?:\s+update)?\s*:\s*(Connected|Connecting)\b')
+        finally { $ErrorActionPreference = $prev }
+        # Accept several localisations of the status line.
+        # Real warp-cli output samples:
+        #   "Status update: Connected"            (EN)
+        #   "Status update: Disconnected"         (EN)
+        #   "Status: Connecting"                  (older)
+        #   "Статус: Подключено"                  (RU locale — rare but happens)
+        $connected = ($out -match '(?im)^\s*(Status(?:\s+update)?|Статус)\s*:\s*(Connected|Connecting|Подключено|Подключение)\b')
         $st = @{ Installed=$true; Connected=$connected; Raw=$out }
     }
     $Script:WarpStatusCache       = $st
@@ -592,54 +613,119 @@ function Reset-WarpStatusCache {
 
 function Set-WarpMode([string]$mode) {
     $exe = Get-WarpCli
-    if (-not $exe) { throw 'warp-cli not found.' }
-    # Some warp-cli versions: `warp-cli set-mode <mode>` (newer).
-    # Older: `warp-cli mode <mode>`. Try new first, fall back to old.
-    #
-    # Critical: capture exit code BEFORE a pipeline — `| Out-Null` sets
-    # $LASTEXITCODE on some PS hosts, which masked the true exit code before.
-    $out = & $exe 'set-mode' $mode 2>&1
-    $rc  = $LASTEXITCODE
-    if ($rc -ne 0) {
-        $out2 = & $exe 'mode' $mode 2>&1
-        $rc2  = $LASTEXITCODE
-        if ($rc2 -ne 0) {
-            throw ("warp-cli: both 'set-mode' and 'mode' failed (rc=$rc/$rc2). Output: " + (($out + $out2) -join '; '))
+    if (-not $exe) { throw 'warp-cli не найден.' }
+
+    # warp-cli CLI syntax has changed three times across versions:
+    #   pre-2023:   `warp-cli set-mode <mode>`
+    #   2023:       `warp-cli mode <mode>`
+    #   2024.10+:   `warp-cli mode set <mode>`
+    # We try all three, isolated from $ErrorActionPreference, and stop at the
+    # first one that either (a) returns rc=0, OR (b) produces no "unrecognized
+    # subcommand" error in stderr.
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $attempts = @(
+        @{ ArgList = @('mode', 'set', $mode); Label = 'mode set' }
+        @{ ArgList = @('mode', $mode);        Label = 'mode' }
+        @{ ArgList = @('set-mode', $mode);    Label = 'set-mode' }
+    )
+    $lastErr = ''
+    $succeeded = $false
+    try {
+        foreach ($a in $attempts) {
+            $out = & $exe @($a.ArgList) 2>&1
+            $rc  = $LASTEXITCODE
+            if ($null -eq $rc) { $rc = 0 }
+            $outStr = (@($out) | Where-Object { $_ }) -join ' | '
+            if ($rc -eq 0 -and ($outStr -notmatch 'unrecognized|unknown|error:')) {
+                $succeeded = $true
+                break
+            }
+            $lastErr = "rc=$rc ($($a.Label)): $outStr"
+            # If the syntax wasn't recognized at all, try the next one; but if
+            # it was recognized and just failed (ToS not accepted, service
+            # down, etc.), surface that error instead of masking it.
+            if ($outStr -notmatch 'unrecognized|unknown') {
+                break
+            }
         }
+    } finally {
+        $ErrorActionPreference = $prev
     }
+    if (-not $succeeded) {
+        throw "warp-cli не принял режим '$mode'. $lastErr"
+    }
+    Reset-WarpStatusCache
 }
 
 function Connect-Warp {
-    Invoke-WarpCli 'connect' | Out-Null
+    $out = Invoke-WarpCli 'connect'
     Reset-WarpStatusCache
+    $out
 }
 
 function Disconnect-Warp {
-    Invoke-WarpCli 'disconnect' | Out-Null
+    $out = Invoke-WarpCli 'disconnect'
     Reset-WarpStatusCache
+    $out
+}
+
+# Accept Cloudflare ToS non-interactively. Newer warp-cli versions require an
+# explicit registration before connect/mode commands work. If this fails we
+# just ignore it — the underlying command will surface the real error.
+function Register-WarpClient {
+    $exe = Get-WarpCli
+    if (-not $exe) { return $false }
+    # Try the 2024.x style first.
+    try { & $exe 'registration' 'new' 2>&1 | Out-Null } catch { }
+    # Pre-2024 style.
+    try { & $exe 'register' 2>&1 | Out-Null } catch { }
+    # Some builds (2024.10+) gate everything behind `warp-cli --accept-tos`.
+    try { & $exe '--accept-tos' 2>&1 | Out-Null } catch { }
+    return $true
 }
 
 function Install-Warp {
-    Write-LauncherLog 'Installing Cloudflare WARP via winget...' 'Yellow'
+    Write-LauncherLog 'Установка Cloudflare WARP через winget... это может занять 1-2 минуты.' 'Yellow'
     $winget = Get-Command winget -ErrorAction SilentlyContinue
     if (-not $winget) {
-        Write-LauncherLog 'winget is not available. Get installer from https://1.1.1.1/' 'Red'
+        Write-LauncherLog 'winget недоступен. Скачайте установщик с https://1.1.1.1/' 'Red'
         return $false
     }
     $wingetArgs = @(
         'install', '--id', 'Cloudflare.Warp', '-e',
-        '--accept-package-agreements', '--accept-source-agreements'
+        '--accept-package-agreements', '--accept-source-agreements',
+        '--silent'
     )
     & winget @wingetArgs 2>&1 | ForEach-Object { Write-LauncherLog $_ 'DarkGray' }
     Write-LauncherLog '' 'White'
     Reset-WarpStatusCache
+
+    # Wait for the service + exe to actually appear on disk. winget returns
+    # before the MSI post-install hooks finish, especially on first install.
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $deadline) {
+        if (Get-WarpCli) { break }
+        Start-Sleep -Seconds 1
+    }
+
     if (Get-WarpCli) {
-        Write-LauncherLog 'WARP installed. Registering client (accepts ToS)...' 'Green'
-        try { Invoke-WarpCli 'registration' 'new' 2>&1 | Out-Null } catch { }
-        try { Invoke-WarpCli 'register' 2>&1 | Out-Null } catch { }
+        Write-LauncherLog 'WARP установлен. Регистрация клиента (принимает ToS)...' 'Green'
+        Register-WarpClient | Out-Null
+
+        # The CloudflareWARP Windows service needs to be running before
+        # warp-cli connect/mode can talk to it. On fresh installs it is
+        # sometimes in "Stopped" state until the first user login.
+        try {
+            $svc = Get-Service -Name 'CloudflareWARP' -ErrorAction SilentlyContinue
+            if ($svc -and $svc.Status -ne 'Running') {
+                Write-LauncherLog 'Запуск службы CloudflareWARP...' 'Cyan'
+                Start-Service -Name 'CloudflareWARP' -ErrorAction SilentlyContinue
+            }
+        } catch { }
         return $true
     }
-    Write-LauncherLog 'Install finished but warp-cli was not detected.' 'Yellow'
+    Write-LauncherLog 'Установка завершилась, но warp-cli.exe не найден. Проверьте установку вручную.' 'Yellow'
     return $false
 }
 
@@ -648,21 +734,33 @@ function Install-Warp {
 # (default '1' — auto-install). Returns $true once warp-cli is available.
 function Ensure-WarpInstalled([hashtable]$cfg) {
     $st = Get-WarpStatus -Force
-    if ($st.Installed) { return $true }
+    if ($st.Installed) {
+        # Already installed — make sure the service is actually running,
+        # otherwise warp-cli connect will hang forever with a vague error.
+        try {
+            $svc = Get-Service -Name 'CloudflareWARP' -ErrorAction SilentlyContinue
+            if ($svc -and $svc.Status -ne 'Running') {
+                Write-LauncherLog 'Служба CloudflareWARP остановлена — запускаю...' 'Cyan'
+                Start-Service -Name 'CloudflareWARP' -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 1
+            }
+        } catch { }
+        return $true
+    }
 
     if ($cfg -and $cfg.auto_install_warp -ne '1') {
-        Write-LauncherLog 'WARP is not installed and auto_install_warp=0 — leaving as-is.' 'DarkGray'
+        Write-LauncherLog 'WARP не установлен, auto_install_warp=0 — пропускаю.' 'DarkGray'
         return $false
     }
 
-    Write-LauncherLog 'WARP is not installed — installing automatically (winget)...' 'Yellow'
+    Write-LauncherLog 'WARP не установлен — устанавливаю автоматически (winget)...' 'Yellow'
     $ok = Install-Warp
     if (-not $ok) {
-        Write-LauncherLog 'Auto-install of WARP failed.' 'Red'
+        Write-LauncherLog 'Автоустановка WARP не удалась.' 'Red'
         return $false
     }
     Reset-WarpStatusCache
-    Start-Sleep -Seconds 1
+    Start-Sleep -Seconds 2
     return ((Get-WarpStatus -Force).Installed)
 }
 
@@ -853,32 +951,49 @@ function Start-Mode {
     if ($wantWarp) {
         $installed = Ensure-WarpInstalled $cfg
         if (-not $installed) {
-            $result.Errors.Add('warp: not installed (auto-install failed or disabled)') | Out-Null
+            $result.Errors.Add('WARP не установлен (авто-установка не удалась или выключена).') | Out-Null
         } else {
+            # Always try to register before any mode/connect — on fresh installs
+            # warp-cli refuses everything until --accept-tos + registration.
+            # Safe to run repeatedly; no-op if already registered.
+            try { Register-WarpClient | Out-Null } catch { }
+
             try {
                 Set-WarpMode 'proxy'
+            } catch {
+                $result.Errors.Add("WARP: не удалось выставить режим proxy — $_") | Out-Null
+                Write-LauncherLog "WARP mode error: $_" 'Red'
+            }
+
+            try {
                 $warp = Get-WarpStatus -Force
                 if (-not $warp.Connected) {
-                    Write-LauncherLog 'WARP: connecting (proxy mode 127.0.0.1:40000)...' 'Cyan'
-                    Connect-Warp
+                    Write-LauncherLog 'WARP: подключение (proxy mode 127.0.0.1:40000)...' 'Cyan'
+                    $connectOut = Connect-Warp
+                    if ($connectOut) {
+                        foreach ($l in ($connectOut -split "`r?`n")) {
+                            if ($l.Trim()) { Write-LauncherLog "  warp-cli: $($l.Trim())" 'DarkGray' }
+                        }
+                    }
                 }
-                # Poll up to 8s for Connected — cold-start handshake can take a moment.
-                $deadline = (Get-Date).AddSeconds(8)
+                # Poll up to 12s for Connected — cold-start handshake can take a moment.
+                $deadline = (Get-Date).AddSeconds(12)
                 $now = $warp
                 while ((Get-Date) -lt $deadline) {
-                    Start-Sleep -Milliseconds 400
+                    Start-Sleep -Milliseconds 500
                     $now = Get-WarpStatus -Force
                     if ($now.Connected) { break }
                 }
                 if ($now.Connected) {
                     $result.Warp = $true
-                    Write-LauncherLog 'WARP connected.' 'Green'
+                    Write-LauncherLog 'WARP подключён.' 'Green'
                 } else {
-                    $result.Errors.Add('warp: connect did not report Connected within 8s') | Out-Null
-                    Write-LauncherLog 'WARP: connect issued but status not Connected within 8s.' 'Yellow'
+                    $rawTail = ($now.Raw -split "`n" | Select-Object -Last 3) -join ' | '
+                    $result.Errors.Add("WARP: статус не Connected за 12 сек. Последний статус: $rawTail") | Out-Null
+                    Write-LauncherLog "WARP: Connected не получен за 12 сек. Статус: $rawTail" 'Yellow'
                 }
             } catch {
-                $result.Errors.Add("warp: $_") | Out-Null
+                $result.Errors.Add("WARP connect: $_") | Out-Null
                 Write-LauncherLog "WARP autostart failed: $_" 'Yellow'
             }
 
