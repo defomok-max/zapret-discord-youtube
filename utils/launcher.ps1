@@ -31,9 +31,6 @@ trap {
     Write-Host ''
     Write-Host 'Stack:' -ForegroundColor DarkGray
     Write-Host $err.ScriptStackTrace -ForegroundColor DarkGray
-    Write-Host ''
-    Write-Host 'Press ENTER to close this window...' -ForegroundColor DarkGray
-    try { [void][Console]::ReadLine() } catch { Start-Sleep -Seconds 30 }
     exit 1
 }
 

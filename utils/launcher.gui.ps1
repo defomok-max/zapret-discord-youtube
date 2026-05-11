@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   WPF-based GUI for codeDPI launcher.
@@ -15,8 +15,8 @@
 
 $ErrorActionPreference = 'Stop'
 
-# Top-level safety net: any uncaught error gets logged and shown to the user
-# instead of silently closing the cmd window before they can read it.
+# Top-level safety net: any uncaught error gets logged. bat controls the
+# pause-on-exit, so we just bail with a non-zero code.
 trap {
     $err = $_
     $msg = "$($err.Exception.GetType().Name): $($err.Exception.Message)"
@@ -33,9 +33,6 @@ trap {
     Write-Host ''
     Write-Host 'Stack:' -ForegroundColor DarkGray
     Write-Host $err.ScriptStackTrace -ForegroundColor DarkGray
-    Write-Host ''
-    Write-Host 'Press ENTER to close this window...' -ForegroundColor DarkGray
-    try { [void][Console]::ReadLine() } catch { Start-Sleep -Seconds 30 }
     exit 1
 }
 
@@ -278,19 +275,19 @@ $xamlText = @'
 $reader = New-Object System.Xml.XmlNodeReader ([xml]$xamlText)
 $Script:window = [Windows.Markup.XamlReader]::Load($reader)
 
-function Find($name) { $Script:window.FindName($name) }
+function Get-XamlElement($name) { $Script:window.FindName($name) }
 
-$Script:txtLog            = Find 'txtLog'
-$Script:lblStatusLine     = Find 'lblStatusLine'
-$Script:pnlServices       = Find 'pnlServices'
-$Script:pnlGeo            = Find 'pnlGeo'
-$Script:cmbStrategy       = Find 'cmbStrategy'
-$Script:cmbWarpMode       = Find 'cmbWarpMode'
-$Script:lblWarpStatus     = Find 'lblWarpStatus'
-$Script:lblWgStatus         = Find 'lblWgStatus'
-$Script:chkWarpAutostart    = Find 'chkWarpAutostart'
-$Script:chkAutoInstallWarp  = Find 'chkAutoInstallWarp'
-$Script:chkGeoRouting       = Find 'chkGeoRouting'
+$Script:txtLog            = Get-XamlElement 'txtLog'
+$Script:lblStatusLine     = Get-XamlElement 'lblStatusLine'
+$Script:pnlServices       = Get-XamlElement 'pnlServices'
+$Script:pnlGeo            = Get-XamlElement 'pnlGeo'
+$Script:cmbStrategy       = Get-XamlElement 'cmbStrategy'
+$Script:cmbWarpMode       = Get-XamlElement 'cmbWarpMode'
+$Script:lblWarpStatus     = Get-XamlElement 'lblWarpStatus'
+$Script:lblWgStatus         = Get-XamlElement 'lblWgStatus'
+$Script:chkWarpAutostart    = Get-XamlElement 'chkWarpAutostart'
+$Script:chkAutoInstallWarp  = Get-XamlElement 'chkAutoInstallWarp'
+$Script:chkGeoRouting       = Get-XamlElement 'chkGeoRouting'
 
 # ============================================================================
 # Logging — sink writes to txtLog
@@ -476,7 +473,7 @@ function With-BypassBusy([scriptblock]$body) {
         if ($Script:Busy) { return }
         $Script:Busy = $true
         $btnNames = @('btnStartDpi', 'btnStartWarp', 'btnStartAll', 'btnStop')
-        $btns = foreach ($n in $btnNames) { Find $n }
+        $btns = foreach ($n in $btnNames) { Get-XamlElement $n }
         try {
             foreach ($b in $btns) { if ($b) { $b.IsEnabled = $false } }
             & $body
@@ -501,17 +498,17 @@ function Run-StartMode([string]$mode) {
     }
 }
 
-(Find 'btnStartDpi' ).Add_Click( (With-BypassBusy { Run-StartMode 'dpi'  }) )
-(Find 'btnStartWarp').Add_Click( (With-BypassBusy { Run-StartMode 'warp' }) )
-(Find 'btnStartAll' ).Add_Click( (With-BypassBusy { Run-StartMode 'all'  }) )
+(Get-XamlElement 'btnStartDpi' ).Add_Click( (With-BypassBusy { Run-StartMode 'dpi'  }) )
+(Get-XamlElement 'btnStartWarp').Add_Click( (With-BypassBusy { Run-StartMode 'warp' }) )
+(Get-XamlElement 'btnStartAll' ).Add_Click( (With-BypassBusy { Run-StartMode 'all'  }) )
 
-(Find 'btnStop').Add_Click( (With-BypassBusy {
+(Get-XamlElement 'btnStop').Add_Click( (With-BypassBusy {
     Write-LauncherLog 'Остановка...' 'Yellow'
     Stop-Combined $Script:Cfg
     Write-LauncherLog 'Остановлено.' 'Green'
 }) )
 
-(Find 'btnInstallSvc').Add_Click( (Catch-Click {
+(Get-XamlElement 'btnInstallSvc').Add_Click( (Catch-Click {
     $bat = Join-Path $RepoRoot 'service.bat'
     if (-not (Test-Path -LiteralPath $bat)) { throw "service.bat не найден: $bat" }
     Start-Process -FilePath 'cmd.exe' -ArgumentList @('/k', "call `"$bat`"")
@@ -519,21 +516,21 @@ function Run-StartMode([string]$mode) {
 }) )
 
 # ---- WARP ----
-(Find 'btnWarpInstall').Add_Click( (Catch-Click {
+(Get-XamlElement 'btnWarpInstall').Add_Click( (Catch-Click {
     Install-Warp | Out-Null
 }) )
 
-(Find 'btnWarpConnect').Add_Click( (Catch-Click {
+(Get-XamlElement 'btnWarpConnect').Add_Click( (Catch-Click {
     Connect-Warp
     Write-LauncherLog 'WARP: connect requested.' 'Cyan'
 }) )
 
-(Find 'btnWarpDisconnect').Add_Click( (Catch-Click {
+(Get-XamlElement 'btnWarpDisconnect').Add_Click( (Catch-Click {
     Disconnect-Warp
     Write-LauncherLog 'WARP: disconnect requested.' 'Cyan'
 }) )
 
-(Find 'btnWarpApplyMode').Add_Click( (Catch-Click {
+(Get-XamlElement 'btnWarpApplyMode').Add_Click( (Catch-Click {
     if ($Script:cmbWarpMode.SelectedItem) {
         $m = [string]$Script:cmbWarpMode.SelectedItem.Content
         Set-WarpMode $m
@@ -543,7 +540,7 @@ function Run-StartMode([string]$mode) {
     }
 }) )
 
-(Find 'btnWarpStatusShow').Add_Click( (Catch-Click {
+(Get-XamlElement 'btnWarpStatusShow').Add_Click( (Catch-Click {
     $st = Get-WarpStatus
     if ($st.Installed) {
         foreach ($l in ($st.Raw -split "`n")) { Write-LauncherLog $l 'DarkGray' }
@@ -553,7 +550,7 @@ function Run-StartMode([string]$mode) {
 }) )
 
 # ---- Geo ----
-(Find 'btnGeoRebuild').Add_Click( (Catch-Click {
+(Get-XamlElement 'btnGeoRebuild').Add_Click( (Catch-Click {
     $info = Write-PacFile $Script:Cfg
     # If PAC is currently active OR auto-routing is enabled, also (re)start the
     # localhost server + register AutoConfigURL so changes take effect now.
@@ -566,11 +563,11 @@ function Run-StartMode([string]$mode) {
     }
 }) )
 
-(Find 'btnGeoEditCustom').Add_Click( (Catch-Click {
+(Get-XamlElement 'btnGeoEditCustom').Add_Click( (Catch-Click {
     Open-CustomGeoDomains
 }) )
 
-(Find 'btnGeoCopyUrl').Add_Click( (Catch-Click {
+(Get-XamlElement 'btnGeoCopyUrl').Add_Click( (Catch-Click {
     $u = Get-PacFileUrl $Script:Cfg
     [System.Windows.Clipboard]::SetText($u)
     Write-LauncherLog "PAC URL скопирован в буфер: $u" 'Cyan'
@@ -581,7 +578,7 @@ function Run-StartMode([string]$mode) {
 }) )
 
 # ---- Custom VPN ----
-(Find 'btnWgImport').Add_Click( (Catch-Click {
+(Get-XamlElement 'btnWgImport').Add_Click( (Catch-Click {
     if (-not (Test-Path $CustomDir)) { $null = New-Item -ItemType Directory -Path $CustomDir }
     $dlg = New-Object Microsoft.Win32.OpenFileDialog
     $dlg.Filter = 'WireGuard config (*.conf)|*.conf'
@@ -592,16 +589,16 @@ function Run-StartMode([string]$mode) {
     }
 }) )
 
-(Find 'btnWgStop').Add_Click( (Catch-Click {
+(Get-XamlElement 'btnWgStop').Add_Click( (Catch-Click {
     $n = Stop-WireGuardTunnels
     Write-LauncherLog "Stopped $n WireGuard tunnel(s)." $(if ($n -gt 0) { 'Green' } else { 'DarkGray' })
 }) )
 
-(Find 'btnWgInstall').Add_Click( (Catch-Click {
+(Get-XamlElement 'btnWgInstall').Add_Click( (Catch-Click {
     Install-WireGuard | Out-Null
 }) )
 
-(Find 'btnProxySet').Add_Click( (Catch-Click {
+(Get-XamlElement 'btnProxySet').Add_Click( (Catch-Click {
     $p = [Microsoft.VisualBasic.Interaction]::InputBox(
         "Примеры:`r`n  socks=127.0.0.1:1080`r`n  http=proxy.example.com:8080`r`n  myproxy.example.com:3128",
         'Системный прокси', '')
@@ -611,25 +608,25 @@ function Run-StartMode([string]$mode) {
     }
 }) )
 
-(Find 'btnProxyDisable').Add_Click( (Catch-Click {
+(Get-XamlElement 'btnProxyDisable').Add_Click( (Catch-Click {
     Disable-SystemProxy
     Write-LauncherLog 'Системный прокси отключён.' 'Green'
 }) )
 
-(Find 'btnOpenCustomDir').Add_Click( (Catch-Click {
+(Get-XamlElement 'btnOpenCustomDir').Add_Click( (Catch-Click {
     if (-not (Test-Path $CustomDir)) { $null = New-Item -ItemType Directory -Path $CustomDir }
     Start-Process explorer.exe $CustomDir
 }) )
 
 # ---- Tools ----
-(Find 'btnEditCustom').Add_Click(  (Catch-Click { Open-CustomDomains; Write-LauncherLog 'Открыт lists/list-custom.txt — сохрани, закрой и перезапусти bypass.' 'DarkGray' }) )
-(Find 'btnUpdateLists').Add_Click( (Catch-Click { Update-Lists }) )
-(Find 'btnDiagnostics').Add_Click( (Catch-Click { Run-Diagnostics }) )
-(Find 'btnOpenCli').Add_Click( (Catch-Click {
+(Get-XamlElement 'btnEditCustom').Add_Click(  (Catch-Click { Open-CustomDomains; Write-LauncherLog 'Открыт lists/list-custom.txt — сохрани, закрой и перезапусти bypass.' 'DarkGray' }) )
+(Get-XamlElement 'btnUpdateLists').Add_Click( (Catch-Click { Update-Lists }) )
+(Get-XamlElement 'btnDiagnostics').Add_Click( (Catch-Click { Run-Diagnostics }) )
+(Get-XamlElement 'btnOpenCli').Add_Click( (Catch-Click {
     $bat = Join-Path $RepoRoot 'launcher.bat'
     Start-Process -FilePath 'cmd.exe' -ArgumentList @('/k', "call `"$bat`" admin cli")
 }) )
-(Find 'btnConnTest').Add_Click( (Catch-Click {
+(Get-XamlElement 'btnConnTest').Add_Click( (Catch-Click {
     Write-LauncherLog 'Тест соединения: PAC-сервер, WARP-прокси, DPI-путь (youtube), Geo-путь (chatgpt через WARP)...' 'Yellow'
     $t = Test-Connectivity $Script:Cfg
     foreach ($k in 'PacServer','Warp','Dpi','Geo') {
@@ -640,7 +637,7 @@ function Run-StartMode([string]$mode) {
     }
 }) )
 
-(Find 'btnLogClear').Add_Click({ $Script:txtLog.Clear() })
+(Get-XamlElement 'btnLogClear').Add_Click({ $Script:txtLog.Clear() })
 
 # ============================================================================
 # Apply current toggles to lists/list-general-user.txt at startup
@@ -656,4 +653,20 @@ try {
 # ============================================================================
 # Show window
 # ============================================================================
-[void]$Script:window.ShowDialog()
+try {
+    $Script:window.Add_SourceInitialized({ try { Write-LauncherLog 'WPF window SourceInitialized' 'DarkGray' } catch { } })
+    $Script:window.Add_Loaded({ try { Write-LauncherLog 'WPF window Loaded — visible' 'DarkGray' } catch { } })
+} catch { }
+
+try {
+    [void]$Script:window.ShowDialog()
+} catch {
+    try {
+        $logPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'launcher.log'
+        $line = "[{0}] gui ShowDialog threw: {1}`n{2}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $_.Exception.Message, $_.ScriptStackTrace
+        Add-Content -LiteralPath $logPath -Value $line -Encoding UTF8
+    } catch { }
+    Write-Host ''
+    Write-Host 'codeDPI GUI: ShowDialog crashed — ' $_.Exception.Message -ForegroundColor Red
+    exit 4
+}

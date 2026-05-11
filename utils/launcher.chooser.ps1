@@ -20,9 +20,6 @@ $ErrorActionPreference = 'Stop'
 $Script:LogPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'launcher.log'
 function Write-BootStep([string]$step) {
     $stamp = Get-Date -Format 'HH:mm:ss'
-    # Print to console so the user sees progress in the cmd window even if
-    # the WPF stage fails. The bat ALWAYS pauses, so they will be able to
-    # read this even when no window appears.
     try { Write-Host ("[{0}] chooser> {1}" -f $stamp, $step) -ForegroundColor DarkGray } catch { }
     try {
         $line = "[{0}] chooser> {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $step
@@ -30,9 +27,8 @@ function Write-BootStep([string]$step) {
     } catch { }
 }
 
-# Apartment-state sanity check. If powershell.exe was launched without -STA,
-# WPF will not work and we should bail with a clear message instead of letting
-# XamlReader.Load throw a confusing 'COM error 0x80010108' / hang.
+# Apartment state MUST be STA for WPF. start.bat passes -STA; if someone ran
+# us by hand without it, bail with a clear message.
 $apt = [System.Threading.Thread]::CurrentThread.GetApartmentState()
 $isAdmin = (New-Object System.Security.Principal.WindowsPrincipal(
     [System.Security.Principal.WindowsIdentity]::GetCurrent())
@@ -45,51 +41,26 @@ if ($apt -ne [System.Threading.ApartmentState]::STA) {
     Write-Host ''
     Write-Host '=====================================================================' -ForegroundColor Red
     Write-Host '  codeDPI chooser cannot start: PowerShell is in MTA mode.' -ForegroundColor Red
-    Write-Host '  Re-run via start.bat (it passes -STA), or:' -ForegroundColor Yellow
+    Write-Host '  Re-run via start.bat (it passes -STA) or:' -ForegroundColor Yellow
     Write-Host '    powershell -NoProfile -ExecutionPolicy Bypass -STA -File "utils\launcher.chooser.ps1"' -ForegroundColor Yellow
     Write-Host '=====================================================================' -ForegroundColor Red
-    Write-Host 'Press ENTER to close...' -ForegroundColor DarkGray
-    try { [void][Console]::ReadLine() } catch { Start-Sleep -Seconds 30 }
     exit 2
 }
 
-# Admin self-elevation. winws.exe + WinDivert + service start all need admin,
-# so we relaunch ourselves with -Verb RunAs the first time. Bat used to do
-# this but moving it INTO the PS gives us a real error message if UAC fails
-# instead of a vanishing cmd window.
 if (-not $isAdmin) {
-    Write-BootStep 'not admin -- relaunching elevated via Start-Process -Verb RunAs'
-    $exe = (Get-Process -Id $PID).Path
-    if (-not $exe) { $exe = 'powershell.exe' }
-    $argList = @(
-        '-NoProfile',
-        '-ExecutionPolicy', 'Bypass',
-        '-STA',
-        '-File', $PSCommandPath
-    )
-    try {
-        Start-Process -FilePath $exe -ArgumentList $argList -Verb RunAs -ErrorAction Stop | Out-Null
-        Write-BootStep 'elevated child started OK; this process exiting'
-        exit 0
-    } catch {
-        Write-BootStep ("FATAL: UAC denied or elevation failed: " + $_.Exception.Message)
-        Write-Host ''
-        Write-Host '=====================================================================' -ForegroundColor Red
-        Write-Host '  codeDPI requires administrator rights to control DPI / WARP.' -ForegroundColor Red
-        Write-Host '  UAC was denied or elevation failed:' -ForegroundColor Yellow
-        Write-Host ('    ' + $_.Exception.Message) -ForegroundColor Yellow
-        Write-Host ''
-        Write-Host '  Try right-clicking start.bat -> Run as administrator.' -ForegroundColor Yellow
-        Write-Host '=====================================================================' -ForegroundColor Red
-        Write-Host ''
-        Write-Host 'Press ENTER to close...' -ForegroundColor DarkGray
-        try { [void][Console]::ReadLine() } catch { Start-Sleep -Seconds 30 }
-        exit 3
-    }
+    # Elevation is now handled by start.bat. If we got here without admin, the
+    # user launched chooser.ps1 directly — tell them to use start.bat.
+    Write-BootStep "FATAL: not admin. Elevation is done by start.bat; do not launch chooser.ps1 by hand."
+    Write-Host ''
+    Write-Host '=====================================================================' -ForegroundColor Red
+    Write-Host '  codeDPI chooser needs administrator rights.' -ForegroundColor Red
+    Write-Host '  Run start.bat (double-click, or right-click -> Run as administrator).' -ForegroundColor Yellow
+    Write-Host '=====================================================================' -ForegroundColor Red
+    exit 3
 }
 
-# Top-level safety net: any uncaught error gets logged and shown to the user
-# instead of silently closing the cmd window before they can read it.
+# Top-level safety net: any uncaught error gets logged. bat controls the
+# pause-on-exit, so we just bail with a non-zero code.
 trap {
     $err = $_
     $msg = "$($err.Exception.GetType().Name): $($err.Exception.Message)"
@@ -103,9 +74,6 @@ trap {
     Write-Host ''
     Write-Host 'Stack:' -ForegroundColor DarkGray
     Write-Host $err.ScriptStackTrace -ForegroundColor DarkGray
-    Write-Host ''
-    Write-Host 'Press ENTER to close this window...' -ForegroundColor DarkGray
-    try { [void][Console]::ReadLine() } catch { Start-Sleep -Seconds 30 }
     exit 1
 }
 
@@ -344,20 +312,35 @@ $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
 Write-BootStep 'building WPF window via XamlReader.Load'
 $Script:window = [Windows.Markup.XamlReader]::Load($reader)
 Write-BootStep 'WPF window built'
-function Find($name) { $Script:window.FindName($name) }
+function Get-XamlElement([string]$name) { $Script:window.FindName($name) }
 
-$dot       = Find 'dot'
-$dotGlow   = Find 'dotGlow'
-$lblStatus = Find 'lblStatus'
-$lblDetail = Find 'lblDetail'
-$lblFoot   = Find 'lblFoot'
-$lblFootRight = Find 'lblFootRight'
-$btnStartDpi  = Find 'btnStartDpi'
-$btnStartWarp = Find 'btnStartWarp'
-$btnStartAll  = Find 'btnStartAll'
-$btnStop      = Find 'btnStop'
-$btnSettings  = Find 'btnSettings'
-$btnTest      = Find 'btnTest'
+$dot       = Get-XamlElement 'dot'
+$dotGlow   = Get-XamlElement 'dotGlow'
+$lblStatus = Get-XamlElement 'lblStatus'
+$lblDetail = Get-XamlElement 'lblDetail'
+$lblFoot   = Get-XamlElement 'lblFoot'
+$lblFootRight = Get-XamlElement 'lblFootRight'
+$btnStartDpi  = Get-XamlElement 'btnStartDpi'
+$btnStartWarp = Get-XamlElement 'btnStartWarp'
+$btnStartAll  = Get-XamlElement 'btnStartAll'
+$btnStop      = Get-XamlElement 'btnStop'
+$btnSettings  = Get-XamlElement 'btnSettings'
+$btnTest      = Get-XamlElement 'btnTest'
+
+# Verify every critical element was found — if XAML names drift, we want to
+# fail fast with a readable error rather than NullReference later.
+$required = @{
+    dot=$dot; dotGlow=$dotGlow; lblStatus=$lblStatus; lblDetail=$lblDetail
+    lblFoot=$lblFoot; lblFootRight=$lblFootRight
+    btnStartDpi=$btnStartDpi; btnStartWarp=$btnStartWarp; btnStartAll=$btnStartAll
+    btnStop=$btnStop; btnSettings=$btnSettings; btnTest=$btnTest
+}
+foreach ($kv in $required.GetEnumerator()) {
+    if (-not $kv.Value) {
+        throw ("XAML element '{0}' not found — launcher.chooser.ps1 XAML is out of sync with the binding list." -f $kv.Key)
+    }
+}
+Write-BootStep ("found {0} XAML elements" -f $required.Count)
 
 $lblFoot.Text = "codeDPI · v$Script:Version"
 # Right-side footer updates dynamically in Update-Status (shows strategy).
@@ -530,18 +513,24 @@ $btnSettings.Add_Click({
     # Open the full GUI asynchronously — non-blocking so the status timer
     # keeps firing in this window. Poll the child process with a short-lived
     # DispatcherTimer; when it exits, re-read config and refresh status.
-    # WPF requires -STA; without it XamlReader.Load throws COM 0x80010108.
+    # WPF requires -STA.
     try {
         $gui = Join-Path $PSScriptRoot 'launcher.gui.ps1'
-        $proc = Start-Process -FilePath 'powershell.exe' `
-                    -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', $gui) `
-                    -PassThru
+        if (-not (Test-Path -LiteralPath $gui)) {
+            Show-Toast "launcher.gui.ps1 не найден: $gui"
+            return
+        }
+        # Quote the path explicitly — Start-Process -ArgumentList in PS5.1
+        # doesn't always quote paths with spaces. Use a single string arg.
+        $argString = '-NoProfile -ExecutionPolicy Bypass -STA -File "' + $gui + '"'
+        Write-BootStep "launching settings: $argString"
+        $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $argString -PassThru -ErrorAction Stop
         if (-not $proc) {
-            Show-Toast 'Не удалось открыть окно настроек.'
+            Show-Toast 'Не удалось запустить окно настроек (Start-Process вернул null).'
             return
         }
         $btnSettings.IsEnabled = $false
-        $lblDetail.Text = 'Открыты настройки — закрой то окно, чтобы продолжить здесь.'
+        $lblDetail.Text = 'Открыты настройки — закрой то окно, чтобы вернуться сюда'
         $waitTimer = New-Object System.Windows.Threading.DispatcherTimer
         $waitTimer.Interval = [TimeSpan]::FromMilliseconds(500)
         $waitTimer.Add_Tick({
@@ -559,7 +548,8 @@ $btnSettings.Add_Click({
         }.GetNewClosure())
         $waitTimer.Start()
     } catch {
-        Show-Toast "Не удалось открыть настройки: $_"
+        Write-BootStep ("settings launch failed: " + $_.Exception.Message)
+        Show-Toast "Не удалось открыть настройки:`n`n$($_.Exception.Message)"
     }
 })
 
@@ -578,6 +568,32 @@ $btnTest.Add_Click( (With-Busy {
 # ============================================================================
 # Show window
 # ============================================================================
+# Wrap ShowDialog in a DispatcherUnhandledException handler so any runtime
+# error in WPF (bad binding, etc.) is caught and logged instead of silently
+# killing the window. We use Window.ShowDialog() directly (no Application
+# instance) because creating an Application.Run() from a script host
+# conflicts with PowerShell's own message loop on some hosts.
+Write-BootStep 'attaching WPF exception handlers'
+try {
+    $Script:window.Add_SourceInitialized({
+        Write-BootStep 'WPF SourceInitialized — HWND created'
+    })
+    $Script:window.Add_Loaded({
+        Write-BootStep 'WPF Loaded — window is visible'
+    })
+} catch { Write-BootStep ("handler attach failed: " + $_.Exception.Message) }
+
 Write-BootStep 'showing main window (ShowDialog)'
-[void]$Script:window.ShowDialog()
-Write-BootStep 'main window closed cleanly'
+try {
+    [void]$Script:window.ShowDialog()
+    Write-BootStep 'main window closed cleanly'
+} catch {
+    Write-BootStep ("ShowDialog threw: " + $_.Exception.Message)
+    try { Add-Content -LiteralPath $Script:LogPath -Value $_.ScriptStackTrace -Encoding UTF8 } catch { }
+    Write-Host ''
+    Write-Host '=====================================================================' -ForegroundColor Red
+    Write-Host '  codeDPI chooser — window crashed' -ForegroundColor Red
+    Write-Host '=====================================================================' -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Yellow
+    exit 4
+}
