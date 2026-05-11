@@ -23,7 +23,7 @@ $Script:PacPath          = Join-Path $UtilsDir  'launcher.pac'
 $Script:PacServerScript  = Join-Path $UtilsDir  'launcher.pacserver.ps1'
 $Script:PacServerPidFile = Join-Path $RepoRoot  'launcher.pac-server.pid'
 $Script:DefaultPacPort   = 27289
-$Script:Version          = '1.4.0'
+$Script:Version          = '1.4.4'
 
 # ============================================================================
 # Service catalogues
@@ -981,21 +981,32 @@ function Start-Mode {
                             }
                         }
                     }
-                    # Poll up to 12s for Connected — cold-start handshake can take a moment.
-                    $deadline = (Get-Date).AddSeconds(12)
+                    # Poll up to 20s for both Connected AND SOCKS5 proxy port.
+                    # Status=Connected alone isn't enough — "Performing happy
+                    # eyeballs" is reported as Connected but the SOCKS5
+                    # listener on :40000 opens ~1-2 sec later. We wait for
+                    # both, so callers can trust result.Warp=true.
+                    $deadline = (Get-Date).AddSeconds(20)
                     $now = $warp
+                    $socksReady = $false
                     while ((Get-Date) -lt $deadline) {
                         Start-Sleep -Milliseconds 500
                         $now = Get-WarpStatus -Force
-                        if ($now.Connected) { break }
+                        if ($now.Connected) {
+                            $socksReady = Test-PortInUse 40000
+                            if ($socksReady) { break }
+                        }
                     }
-                    if ($now.Connected) {
+                    if ($now.Connected -and $socksReady) {
                         $result.Warp = $true
-                        Write-LauncherLog 'WARP подключён.' 'Green'
+                        Write-LauncherLog 'WARP подключён, SOCKS5 на 127.0.0.1:40000 открыт.' 'Green'
+                    } elseif ($now.Connected) {
+                        $result.Errors.Add('WARP: статус Connected, но SOCKS5 порт 40000 не открылся за 20 сек.') | Out-Null
+                        Write-LauncherLog 'WARP: порт 40000 не открыт — возможно включён не proxy режим.' 'Yellow'
                     } else {
                         $rawTail = ($now.Raw -split "`n" | Select-Object -Last 3) -join ' | '
-                        $result.Errors.Add("WARP: статус не Connected за 12 сек. Последний статус: $rawTail") | Out-Null
-                        Write-LauncherLog "WARP: Connected не получен за 12 сек. Статус: $rawTail" 'Yellow'
+                        $result.Errors.Add("WARP: статус не Connected за 20 сек. Последний статус: $rawTail") | Out-Null
+                        Write-LauncherLog "WARP: Connected не получен за 20 сек. Статус: $rawTail" 'Yellow'
                     }
                 } catch {
                     $result.Errors.Add("WARP connect: $_") | Out-Null
@@ -1095,29 +1106,55 @@ function Test-Connectivity([hashtable]$cfg) {
         $port = Get-PacPort $cfg
         try {
             $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$port/launcher.pac" -UseBasicParsing -TimeoutSec 3
-            if ($resp.StatusCode -eq 200 -and $resp.Content -match 'FindProxyForURL') {
-                $r.PacServer = @{ Ok=$true; Detail="serving on 127.0.0.1:$port ($([Math]::Round($resp.RawContentLength/1024,1)) KB)" }
+            # Invoke-WebRequest returns $resp.Content as a BYTE ARRAY when the
+            # response Content-Type is not text/*. Our PAC server uses
+            # 'application/x-ns-proxy-autoconfig', so we must decode manually.
+            $body = if ($resp.Content -is [byte[]]) {
+                [Text.Encoding]::UTF8.GetString($resp.Content)
             } else {
-                $r.PacServer = @{ Ok=$false; Detail="bad response: $($resp.StatusCode)" }
+                [string]$resp.Content
+            }
+            if ($resp.StatusCode -eq 200 -and $body -match 'FindProxyForURL') {
+                $r.PacServer = @{ Ok=$true; Detail="раздаётся на 127.0.0.1:$port ($([Math]::Round($body.Length/1024,1)) KB)" }
+            } else {
+                $r.PacServer = @{ Ok=$false; Detail="bad response: HTTP $($resp.StatusCode) (body $($body.Length) chars)" }
             }
         } catch { $r.PacServer = @{ Ok=$false; Detail="$_" } }
     } else {
-        $r.PacServer = @{ Ok=$false; Detail='PAC server is not running' }
+        $r.PacServer = @{ Ok=$false; Detail='PAC-сервер не запущен' }
     }
 
-    # WARP proxy port (40000) reachable?
+    # WARP proxy port (40000) — TCP reachable? AND does SOCKS5 handshake work?
     $warpPing = $false
+    $warpDetail = 'SOCKS5-порт 40000 не слушается (WARP в proxy-режиме не запущен)'
     try {
         $tcp = New-Object System.Net.Sockets.TcpClient
         $task = $tcp.ConnectAsync('127.0.0.1', 40000)
-        if ($task.Wait(2000) -and $tcp.Connected) { $warpPing = $true }
+        if ($task.Wait(2000) -and $tcp.Connected) {
+            # Port is open. Try SOCKS5 no-auth handshake to confirm it's
+            # actually a SOCKS5 server and not some other process squatting
+            # on :40000 (happens surprisingly often with other VPN clients).
+            try {
+                $stream = $tcp.GetStream()
+                $stream.ReadTimeout = 1500
+                $stream.WriteTimeout = 1500
+                # Greeting: VER=5, NMETHODS=1, METHOD=0(no-auth)
+                $stream.Write(([byte[]]@(0x05, 0x01, 0x00)), 0, 3)
+                $buf = New-Object byte[] 2
+                $read = $stream.Read($buf, 0, 2)
+                if ($read -ge 2 -and $buf[0] -eq 0x05 -and $buf[1] -eq 0x00) {
+                    $warpPing = $true
+                    $warpDetail = 'SOCKS5-прокси на 127.0.0.1:40000 отвечает корректно'
+                } else {
+                    $warpDetail = "порт 40000 открыт, но не SOCKS5 (greeting: $($buf[0]),$($buf[1]))"
+                }
+            } catch {
+                $warpDetail = "порт 40000 открыт, но SOCKS5 handshake упал: $($_.Exception.Message)"
+            }
+        }
         $tcp.Close()
     } catch { }
-    if ($warpPing) {
-        $r.Warp = @{ Ok=$true; Detail='SOCKS5 listener on 127.0.0.1:40000 is up' }
-    } else {
-        $r.Warp = @{ Ok=$false; Detail='no listener on 127.0.0.1:40000 (WARP proxy mode not running)' }
-    }
+    $r.Warp = @{ Ok=$warpPing; Detail=$warpDetail }
 
     # DPI test — direct fetch to youtube. If zapret + winws is OK, this should
     # return 200/204 even on RU networks. We MUST bypass any system proxy so
