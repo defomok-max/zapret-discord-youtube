@@ -123,7 +123,7 @@ Write-BootStep ("config loaded ({0} keys)" -f $Script:Cfg.Count)
 $xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="codeDPI" Width="580" Height="440"
+        Title="codeDPI" Width="600" Height="470"
         WindowStartupLocation="CenterScreen"
         ResizeMode="NoResize"
         Background="#181a1f"
@@ -145,6 +145,7 @@ $xaml = @'
             <Setter Property="FontSize" Value="13"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Margin" Value="5"/>
+            <Setter Property="MinHeight" Value="54"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -179,9 +180,19 @@ $xaml = @'
             <Setter Property="BorderBrush" Value="#1b4332"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
         </Style>
+        <Style x:Key="PrimaryStartButton" TargetType="Button" BasedOn="{StaticResource StartButton}">
+            <Setter Property="Background" Value="#2d7a55"/>
+            <Setter Property="FontSize" Value="14"/>
+        </Style>
         <Style x:Key="StopButton" TargetType="Button" BasedOn="{StaticResource ActionButton}">
             <Setter Property="Background" Value="#5c2a2a"/>
             <Setter Property="BorderBrush" Value="#4a2020"/>
+        </Style>
+        <Style x:Key="SectionLabel" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#7d8290"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="6,0,0,6"/>
         </Style>
     </Window.Resources>
     <Grid>
@@ -192,44 +203,52 @@ $xaml = @'
         </Grid.RowDefinitions>
 
         <!-- ═══ Header bar ═══ -->
-        <Border Grid.Row="0" Background="{StaticResource AccentGrad}" Padding="20,14" CornerRadius="0,0,0,0">
+        <Border Grid.Row="0" Background="{StaticResource AccentGrad}" Padding="20,16">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <!-- Status dot with glow -->
-                <Grid Grid.Column="0" VerticalAlignment="Center" Margin="0,0,14,0">
-                    <Ellipse x:Name="dotGlow" Width="22" Height="22" Opacity="0.35">
+                <!-- Status dot with glow ring behind it -->
+                <Grid Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0"
+                      Width="24" Height="24">
+                    <!-- Outer glow — painted first so it sits behind the dot -->
+                    <Ellipse x:Name="dotGlow" Width="24" Height="24" Opacity="0.5">
                         <Ellipse.Fill>
                             <RadialGradientBrush>
-                                <GradientStop Color="#666666" Offset="0.3"/>
+                                <GradientStop Color="#666666" Offset="0.35"/>
                                 <GradientStop Color="Transparent" Offset="1"/>
                             </RadialGradientBrush>
                         </Ellipse.Fill>
                     </Ellipse>
-                    <Ellipse x:Name="dot" Width="14" Height="14" Fill="#666666"/>
+                    <!-- Solid dot on top -->
+                    <Ellipse x:Name="dot" Width="12" Height="12" Fill="#666666"
+                             HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Grid>
                 <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                    <TextBlock x:Name="lblStatus" Text="Загрузка..." FontSize="15" FontWeight="SemiBold" Foreground="#ffffff"/>
-                    <TextBlock x:Name="lblDetail" Text="" FontSize="11" Foreground="#b0d4c0" Margin="0,2,0,0"/>
+                    <TextBlock x:Name="lblStatus" Text="Проверка статуса…"
+                               FontSize="16" FontWeight="SemiBold" Foreground="#ffffff"/>
+                    <TextBlock x:Name="lblDetail" Text="инициализация"
+                               FontSize="11" Foreground="#b0d4c0" Margin="0,3,0,0"/>
                 </StackPanel>
             </Grid>
         </Border>
 
         <!-- ═══ Main content ═══ -->
-        <Grid Grid.Row="1" Margin="20,18,20,10">
+        <Grid Grid.Row="1" Margin="20,18,20,12">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
-                <RowDefinition Height="*"/>
-                <RowDefinition Height="12"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="14"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
 
-            <TextBlock Grid.Row="0" Margin="6,0,0,6" Foreground="#888" FontSize="11"
-                       Text="Запуск — выбери режим:"/>
+            <!-- Section 1: Start -->
+            <TextBlock Grid.Row="0" Style="{StaticResource SectionLabel}"
+                       Text="▶  ЗАПУСК — выбери режим"/>
 
-            <!-- Start buttons row -->
             <Grid Grid.Row="1">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
@@ -237,39 +256,84 @@ $xaml = @'
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Button x:Name="btnStartDpi"  Grid.Column="0" Style="{StaticResource StartButton}"
-                        Content="▶  DPI"
-                        ToolTip="Обход блокировок провайдера: YouTube, Discord, Telegram, Meta, X… (winws.exe без WARP)"/>
+                        ToolTip="Обход блокировок провайдера: YouTube, Discord, Telegram, Meta, X… (winws.exe, без WARP)">
+                    <StackPanel HorizontalAlignment="Center">
+                        <TextBlock Text="DPI" FontWeight="Bold" FontSize="14" HorizontalAlignment="Center"/>
+                        <TextBlock Text="обход провайдера" FontSize="10" Opacity="0.75"
+                                   HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                    </StackPanel>
+                </Button>
                 <Button x:Name="btnStartWarp" Grid.Column="1" Style="{StaticResource StartButton}"
-                        Content="▶  WARP+Гео"
-                        ToolTip="Обход гео-блоковки: ChatGPT, Claude, Gemini, Cursor, Copilot… (WARP SOCKS5 + PAC). WARP ставится автоматически."/>
-                <Button x:Name="btnStartAll"  Grid.Column="2" Style="{StaticResource StartButton}"
-                        Content="▶  Всё"
-                        ToolTip="DPI + WARP + PAC одним кликом. Самый простой вариант."/>
+                        ToolTip="Обход гео-блокировок: ChatGPT, Claude, Gemini, Cursor, Copilot… (WARP SOCKS5 + PAC). WARP ставится автоматически через winget.">
+                    <StackPanel HorizontalAlignment="Center">
+                        <TextBlock Text="WARP + Гео" FontWeight="Bold" FontSize="14" HorizontalAlignment="Center"/>
+                        <TextBlock Text="AI-сервисы, гео" FontSize="10" Opacity="0.75"
+                                   HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                    </StackPanel>
+                </Button>
+                <Button x:Name="btnStartAll"  Grid.Column="2" Style="{StaticResource PrimaryStartButton}"
+                        ToolTip="DPI + WARP + PAC одним кликом. Рекомендуется если не знаешь что именно нужно.">
+                    <StackPanel HorizontalAlignment="Center">
+                        <TextBlock Text="Всё сразу" FontWeight="Bold" FontSize="14" HorizontalAlignment="Center"/>
+                        <TextBlock Text="DPI + WARP + PAC" FontSize="10" Opacity="0.85"
+                                   HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                    </StackPanel>
+                </Button>
             </Grid>
 
             <!-- Separator -->
-            <Rectangle Grid.Row="2" Height="1" Fill="#2e3038" Margin="6,0"/>
+            <Rectangle Grid.Row="2" Height="1" Fill="#2e3038" VerticalAlignment="Center" Margin="6,0"/>
 
-            <!-- Action buttons row -->
-            <Grid Grid.Row="3">
+            <!-- Section 2: Actions -->
+            <TextBlock Grid.Row="3" Style="{StaticResource SectionLabel}" Text="⚙  УПРАВЛЕНИЕ"/>
+
+            <Grid Grid.Row="4">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Button x:Name="btnStop"     Grid.Column="0" Style="{StaticResource StopButton}"
-                        Content="■  Остановить"/>
+                        ToolTip="Остановить winws, отключить WARP, убрать PAC-регистрацию">
+                    <StackPanel HorizontalAlignment="Center">
+                        <TextBlock Text="■  Стоп" FontSize="13" HorizontalAlignment="Center"/>
+                        <TextBlock Text="выключить всё" FontSize="10" Opacity="0.7"
+                                   HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                    </StackPanel>
+                </Button>
                 <Button x:Name="btnSettings" Grid.Column="1" Style="{StaticResource ActionButton}"
-                        Content="⚙  Настройки"/>
+                        ToolTip="Открыть полный GUI: чекбоксы сервисов, выбор стратегии, WARP, WireGuard, системный прокси">
+                    <StackPanel HorizontalAlignment="Center">
+                        <TextBlock Text="⚙  Настройки" FontSize="13" HorizontalAlignment="Center"/>
+                        <TextBlock Text="сервисы, стратегия, WARP" FontSize="10" Opacity="0.7"
+                                   HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                    </StackPanel>
+                </Button>
                 <Button x:Name="btnTest"     Grid.Column="2" Style="{StaticResource ActionButton}"
-                        Content="✓  Тест связи"/>
+                        ToolTip="Smoke-test: PAC server / WARP port / DPI путь (youtube) / Geo путь (chatgpt)">
+                    <StackPanel HorizontalAlignment="Center">
+                        <TextBlock Text="✓  Тест связи" FontSize="13" HorizontalAlignment="Center"/>
+                        <TextBlock Text="проверить работу" FontSize="10" Opacity="0.7"
+                                   HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                    </StackPanel>
+                </Button>
             </Grid>
         </Grid>
 
         <!-- ═══ Footer ═══ -->
-        <Border Grid.Row="2" Background="#14161a" Padding="16,8">
-            <TextBlock x:Name="lblFoot" Foreground="#555" FontSize="10.5" TextAlignment="Center"
-                       Text="codeDPI · v1.3.0"/>
+        <Border Grid.Row="2" Background="#14161a" Padding="16,8" BorderBrush="#22252a" BorderThickness="0,1,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="lblFoot" Grid.Column="0" Foreground="#55595f"
+                           FontSize="10.5" VerticalAlignment="Center"
+                           Text="codeDPI"/>
+                <TextBlock x:Name="lblFootRight" Grid.Column="1" Foreground="#7d8290"
+                           FontSize="10.5" VerticalAlignment="Center"
+                           Text=""/>
+            </Grid>
         </Border>
     </Grid>
 </Window>
@@ -287,6 +351,7 @@ $dotGlow   = Find 'dotGlow'
 $lblStatus = Find 'lblStatus'
 $lblDetail = Find 'lblDetail'
 $lblFoot   = Find 'lblFoot'
+$lblFootRight = Find 'lblFootRight'
 $btnStartDpi  = Find 'btnStartDpi'
 $btnStartWarp = Find 'btnStartWarp'
 $btnStartAll  = Find 'btnStartAll'
@@ -294,7 +359,8 @@ $btnStop      = Find 'btnStop'
 $btnSettings  = Find 'btnSettings'
 $btnTest      = Find 'btnTest'
 
-$lblFoot.Text = "codeDPI · v$Script:Version · PSv$($PSVersionTable.PSVersion.Major)"
+$lblFoot.Text = "codeDPI · v$Script:Version"
+# Right-side footer updates dynamically in Update-Status (shows strategy).
 
 # ============================================================================
 # Status updater
@@ -326,7 +392,7 @@ function Update-Status {
         $lblStatus.Text = 'Активно: DPI + WARP + PAC'
     } elseif ($bypass -and $warpUp) {
         Set-Dot '#d29922'
-        $lblStatus.Text = 'Частично: DPI + WARP, без PAC'
+        $lblStatus.Text = 'Частично: DPI + WARP (без PAC)'
     } elseif ($warpOnly) {
         Set-Dot '#2ea043'
         $lblStatus.Text = 'Активно: WARP + PAC (только гео)'
@@ -341,16 +407,21 @@ function Update-Status {
         $lblStatus.Text = 'Выключено'
     }
 
-    # Sub-line: terse details.
+    # Sub-line — terse state pills.
     $bits = @()
     if ($dpiUp)  { $bits += 'winws' }
     if ($svcUp)  { $bits += 'service' }
     if ($warpUp) { $bits += 'warp' }
     if ($pacUp -and $pacSrv) { $bits += "pac:$(Get-PacPort $Script:Cfg)" }
-    elseif ($pacUp -and -not $pacSrv) { $bits += 'pac:reg(noserver)' }
-    elseif ($pacSrv -and -not $pacUp) { $bits += 'pac:srv(notreg)' }
-    if (-not $bits) { $bits = @('idle') }
+    elseif ($pacUp -and -not $pacSrv) { $bits += 'pac: reg есть, сервер упал' }
+    elseif ($pacSrv -and -not $pacUp) { $bits += 'pac: сервер есть, reg нет' }
+    if (-not $bits) { $bits = @('все выключено') }
     $lblDetail.Text = ($bits -join '  ·  ')
+
+    # Right-side footer: current strategy (trimmed so it fits on 600px window).
+    $stratShort = [string]$Script:Cfg.strategy
+    if ($stratShort.Length -gt 38) { $stratShort = $stratShort.Substring(0, 35) + '…' }
+    $lblFootRight.Text = "стратегия: $stratShort"
 }
 
 Update-Status
@@ -366,6 +437,44 @@ $Script:window.Add_Closed({ try { if ($Script:timer) { $Script:timer.Stop() } } 
 function Show-Toast([string]$message, [string]$title = 'launcher') {
     [System.Windows.MessageBox]::Show($Script:window, $message, $title,
         [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information) | Out-Null
+}
+
+# Show a monospace-formatted result in a proper WPF dialog. Standard
+# MessageBox uses a proportional font that mangles columnar output like
+# smoke-test results — this dialog preserves alignment.
+function Show-Report([string]$title, [string]$body, [hashtable]$rows = $null) {
+    $dlgXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="__TITLE__" Width="560" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="#181a1f" Foreground="#e8e8e8"
+        FontFamily="Segoe UI" FontSize="12">
+    <StackPanel Margin="16">
+        <TextBlock Text="__TITLE__" FontSize="15" FontWeight="SemiBold"
+                   Foreground="#ffffff" Margin="0,0,0,10"/>
+        <Border Background="#12141a" BorderBrush="#2a2d35" BorderThickness="1"
+                CornerRadius="6" Padding="12">
+            <TextBox x:Name="txt" IsReadOnly="True" Background="Transparent"
+                     Foreground="#cdf3cd" FontFamily="Consolas" FontSize="12"
+                     BorderThickness="0" TextWrapping="NoWrap"
+                     VerticalScrollBarVisibility="Auto" MaxHeight="260"/>
+        </Border>
+        <Button x:Name="btnOk" Content="OK" HorizontalAlignment="Right" Margin="0,12,0,0"
+                Padding="24,6" Background="#264d3b" Foreground="#e8e8e8"
+                BorderBrush="#1b4332" BorderThickness="1" Cursor="Hand" IsDefault="True"/>
+    </StackPanel>
+</Window>
+'@
+    $xamlText = $dlgXaml -replace '__TITLE__', ([System.Security.SecurityElement]::Escape($title))
+    $rdr = New-Object System.Xml.XmlNodeReader ([xml]$xamlText)
+    $dlg = [Windows.Markup.XamlReader]::Load($rdr)
+    $dlg.Owner = $Script:window
+    $txt = $dlg.FindName('txt')
+    $txt.Text = $body
+    $dlg.FindName('btnOk').Add_Click({ $dlg.Close() }.GetNewClosure())
+    [void]$dlg.ShowDialog()
 }
 
 $Script:Busy = $false
@@ -418,17 +527,37 @@ $btnStop.Add_Click( (With-Busy {
 }) )
 
 $btnSettings.Add_Click({
-    # Open the full GUI in the same console (admin already), then re-read config.
-    # WPF requires -STA; without it XamlReader.Load throws COM 0x80010108 and
-    # the Settings button silently does nothing on some hosts.
+    # Open the full GUI asynchronously — non-blocking so the status timer
+    # keeps firing in this window. Poll the child process with a short-lived
+    # DispatcherTimer; when it exits, re-read config and refresh status.
+    # WPF requires -STA; without it XamlReader.Load throws COM 0x80010108.
     try {
         $gui = Join-Path $PSScriptRoot 'launcher.gui.ps1'
         $proc = Start-Process -FilePath 'powershell.exe' `
                     -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', $gui) `
                     -PassThru
-        $proc.WaitForExit()
-        $Script:Cfg = Read-Config
-        Update-Status
+        if (-not $proc) {
+            Show-Toast 'Не удалось открыть окно настроек.'
+            return
+        }
+        $btnSettings.IsEnabled = $false
+        $lblDetail.Text = 'Открыты настройки — закрой то окно, чтобы продолжить здесь.'
+        $waitTimer = New-Object System.Windows.Threading.DispatcherTimer
+        $waitTimer.Interval = [TimeSpan]::FromMilliseconds(500)
+        $waitTimer.Add_Tick({
+            try {
+                if ($proc.HasExited) {
+                    $waitTimer.Stop()
+                    $btnSettings.IsEnabled = $true
+                    $Script:Cfg = Read-Config
+                    Update-Status
+                }
+            } catch {
+                $waitTimer.Stop()
+                $btnSettings.IsEnabled = $true
+            }
+        }.GetNewClosure())
+        $waitTimer.Start()
     } catch {
         Show-Toast "Не удалось открыть настройки: $_"
     }
@@ -440,10 +569,10 @@ $btnTest.Add_Click( (With-Busy {
     $lines = @()
     foreach ($k in 'PacServer', 'Warp', 'Dpi', 'Geo') {
         $row = $t[$k]
-        $mark = if ($row.Ok) { '[OK]  ' } else { '[FAIL]' }
-        $lines += "{0,-6} {1,-9} — {2}" -f $mark, $k, $row.Detail
+        $mark = if ($row.Ok) { '[  OK  ]' } else { '[ FAIL ]' }
+        $lines += "{0}  {1,-9}  {2}" -f $mark, $k, $row.Detail
     }
-    Show-Toast ($lines -join "`n") 'Тест соединения'
+    Show-Report 'Тест соединения' ($lines -join "`r`n")
 }) )
 
 # ============================================================================

@@ -53,8 +53,8 @@ Add-Type -AssemblyName Microsoft.VisualBasic
 $xamlText = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="codeDPI — settings"
-        Width="760" Height="780"
+        Title="codeDPI — настройки"
+        Width="780" Height="820"
         Background="#1b1d22" Foreground="#dddddd"
         FontFamily="Segoe UI" FontSize="12"
         WindowStartupLocation="CenterScreen">
@@ -128,11 +128,11 @@ $xamlText = @'
       <Grid>
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto"/>
-          <RowDefinition Height="120"/>
+          <RowDefinition Height="160"/>
         </Grid.RowDefinitions>
         <DockPanel Grid.Row="0">
-          <TextBlock Text="Log" Style="{StaticResource SectionTitle}" Margin="2,0,0,2"/>
-          <Button x:Name="btnLogClear" Content="Clear" DockPanel.Dock="Right" Padding="6,1" Margin="0,0,0,2"/>
+          <TextBlock Text="Журнал" Style="{StaticResource SectionTitle}" Margin="2,0,0,2"/>
+          <Button x:Name="btnLogClear" Content="Очистить" DockPanel.Dock="Right" Padding="8,1" Margin="0,0,0,2"/>
         </DockPanel>
         <TextBox x:Name="txtLog" Grid.Row="1" IsReadOnly="True"
                  VerticalScrollBarVisibility="Auto"
@@ -147,8 +147,8 @@ $xamlText = @'
         <!-- DPI services -->
         <Border Style="{StaticResource Card}">
           <StackPanel>
-            <TextBlock Text="DPI bypass (zapret) — services" Style="{StaticResource SectionTitle}"/>
-            <TextBlock Style="{StaticResource Hint}" Text="Domains that get DPI desync via winws.exe. YouTube and Discord are always on (they live in upstream lists). Toggle the rest. Changes are saved and applied immediately."/>
+            <TextBlock Text="DPI-обход (zapret) — сервисы" Style="{StaticResource SectionTitle}"/>
+            <TextBlock Style="{StaticResource Hint}" Text="Домены с DPI-десинхронизацией через winws.exe. YouTube и Discord всегда включены (живут в апстримных списках). Остальное — тумблером. Изменения сохраняются и применяются сразу."/>
             <ItemsControl x:Name="pnlServices">
               <ItemsControl.ItemsPanel>
                 <ItemsPanelTemplate>
@@ -162,19 +162,22 @@ $xamlText = @'
         <!-- Strategy + Start/Stop -->
         <Border Style="{StaticResource Card}">
           <StackPanel>
-            <TextBlock Text="Strategy + Start / Stop" Style="{StaticResource SectionTitle}"/>
-            <TextBlock Style="{StaticResource Hint}" Text="Different RU providers respond to different desync techniques. If your current strategy stops working, try ALT / FAKE TLS AUTO / SIMPLE FAKE variants until traffic is restored."/>
-            <DockPanel Margin="0,0,0,8">
-              <TextBlock Text="Strategy:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+            <TextBlock Text="Запуск и стратегия" Style="{StaticResource SectionTitle}"/>
+            <TextBlock Style="{StaticResource Hint}" Text="Разные провайдеры отвечают на разные техники десинхронизации. Если текущая стратегия перестала работать — попробуй ALT / FAKE TLS AUTO / SIMPLE FAKE по очереди, пока трафик не восстановится."/>
+            <DockPanel Margin="0,0,0,10">
+              <TextBlock Text="Стратегия:" VerticalAlignment="Center" Margin="0,0,8,0" Width="72"/>
               <ComboBox x:Name="cmbStrategy"/>
             </DockPanel>
-            <TextBlock Style="{StaticResource Hint}" Text="Старт в трёх вариантах: только DPI (обход провайдера), только WARP+Гео (ChatGPT/Claude…), или всё сразу."/>
+            <TextBlock Style="{StaticResource Hint}"
+                       Text="Три варианта запуска: только DPI (обход провайдера), только WARP+Гео (AI-сервисы), или всё сразу."/>
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+              <Button x:Name="btnStartDpi"    Content="▶ Старт DPI"              Background="#264d3b" FontWeight="SemiBold" Padding="14,6"/>
+              <Button x:Name="btnStartWarp"   Content="▶ Старт WARP+Гео"         Background="#264d3b" FontWeight="SemiBold" Padding="14,6"/>
+              <Button x:Name="btnStartAll"    Content="▶ Старт Всё (DPI+WARP)"   Background="#2d7a55" FontWeight="Bold"     Padding="14,6"/>
+              <Button x:Name="btnStop"        Content="■ Стоп"                   Background="#5c2a2a" Padding="14,6"/>
+            </StackPanel>
             <StackPanel Orientation="Horizontal">
-              <Button x:Name="btnStartDpi"    Content="▶ Старт DPI"            Background="#2d6a4f"/>
-              <Button x:Name="btnStartWarp"   Content="▶ Старт WARP+Гео"      Background="#2d6a4f"/>
-              <Button x:Name="btnStartAll"    Content="▶ Старт Всё (DPI+WARP)"  Background="#1b4332" FontWeight="SemiBold"/>
-              <Button x:Name="btnStop"        Content="■ Stop"                  Background="#793a3a"/>
-              <Button x:Name="btnInstallSvc"  Content="Install as Windows service…"/>
+              <Button x:Name="btnInstallSvc"  Content="Установить как Windows-службу…"/>
             </StackPanel>
           </StackPanel>
         </Border>
@@ -183,26 +186,26 @@ $xamlText = @'
         <Border Style="{StaticResource Card}">
           <StackPanel>
             <TextBlock Text="Cloudflare WARP" Style="{StaticResource SectionTitle}"/>
-            <TextBlock Style="{StaticResource Hint}" Text="Free, no signup. Run by Cloudflare. Gives you a different exit IP. Used here to reach services that geo-block RU IPs. Auto-start can chain WARP onto every Start bypass click."/>
+            <TextBlock Style="{StaticResource Hint}" Text="Бесплатный, без регистрации. От Cloudflare. Даёт другой выходной IP. Используется тут чтобы достучаться до сервисов, блокирующих RU IP. Авто-старт запускает WARP вместе с каждым нажатием Старт."/>
             <TextBlock x:Name="lblWarpStatus" Margin="0,0,0,8" Foreground="#a0a4ad"/>
-            <CheckBox x:Name="chkWarpAutostart"  Content="Auto-start WARP when starting bypass (proxy mode + PAC routing)"/>
-            <CheckBox x:Name="chkAutoInstallWarp" Content="Авто-устанавливать WARP через winget, если он не найден (включается при Старт WARP/Всё)"/>
-            <CheckBox x:Name="chkGeoRouting"     Content="Apply PAC routing for geo-blocked services (system AutoConfigURL)"/>
+            <CheckBox x:Name="chkWarpAutostart"  Content="Авто-запуск WARP при старте bypass (proxy-режим + PAC)"/>
+            <CheckBox x:Name="chkAutoInstallWarp" Content="Автоматически ставить WARP через winget, если не найден (работает при Старт WARP/Всё)"/>
+            <CheckBox x:Name="chkGeoRouting"     Content="Применять PAC для гео-сервисов (системный AutoConfigURL)"/>
             <DockPanel Margin="0,8,0,8">
-              <TextBlock Text="Manual mode:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+              <TextBlock Text="Ручной режим:" VerticalAlignment="Center" Margin="0,0,8,0"/>
               <ComboBox x:Name="cmbWarpMode" Width="160">
                 <ComboBoxItem>warp</ComboBoxItem>
                 <ComboBoxItem>warp+doh</ComboBoxItem>
                 <ComboBoxItem>doh</ComboBoxItem>
                 <ComboBoxItem>proxy</ComboBoxItem>
               </ComboBox>
-              <Button x:Name="btnWarpApplyMode" Content="Apply mode" DockPanel.Dock="Left" Margin="6,0,0,0"/>
+              <Button x:Name="btnWarpApplyMode" Content="Применить режим" DockPanel.Dock="Left" Margin="6,0,0,0"/>
             </DockPanel>
             <StackPanel Orientation="Horizontal">
-              <Button x:Name="btnWarpInstall"     Content="Install (winget)"/>
-              <Button x:Name="btnWarpConnect"     Content="Connect"/>
-              <Button x:Name="btnWarpDisconnect"  Content="Disconnect"/>
-              <Button x:Name="btnWarpStatusShow"  Content="Show full status"/>
+              <Button x:Name="btnWarpInstall"     Content="Установить (winget)"/>
+              <Button x:Name="btnWarpConnect"     Content="Подключить"/>
+              <Button x:Name="btnWarpDisconnect"  Content="Отключить"/>
+              <Button x:Name="btnWarpStatusShow"  Content="Подробный статус"/>
             </StackPanel>
           </StackPanel>
         </Border>
@@ -210,8 +213,8 @@ $xamlText = @'
         <!-- Geo-blocked services -->
         <Border Style="{StaticResource Card}">
           <StackPanel>
-            <TextBlock Text="Geo-blocked services (routed via WARP)" Style="{StaticResource SectionTitle}"/>
-            <TextBlock Style="{StaticResource Hint}" Text="These domains zapret CANNOT unblock — they refuse RU IPs server-side. Selected ones are routed through WARP via a generated PAC file (works for Chrome / Edge / IE). Firefox needs manual PAC URL — see README."/>
+            <TextBlock Text="Гео-блокированные сервисы (через WARP)" Style="{StaticResource SectionTitle}"/>
+            <TextBlock Style="{StaticResource Hint}" Text="Эти домены zapret НЕ разблокирует — они отказывают RU IP на своей стороне. Выбранные идут через WARP по сгенерированному PAC-файлу (работает для Chrome / Edge / IE). Для Firefox нужен ручной PAC URL — см. README."/>
             <ItemsControl x:Name="pnlGeo">
               <ItemsControl.ItemsPanel>
                 <ItemsPanelTemplate>
@@ -220,9 +223,9 @@ $xamlText = @'
               </ItemsControl.ItemsPanel>
             </ItemsControl>
             <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-              <Button x:Name="btnGeoRebuild"     Content="Rebuild PAC now"/>
-              <Button x:Name="btnGeoEditCustom"  Content="Edit custom geo list…"/>
-              <Button x:Name="btnGeoCopyUrl"     Content="Copy PAC URL (for Firefox)"/>
+              <Button x:Name="btnGeoRebuild"     Content="Пересобрать PAC сейчас"/>
+              <Button x:Name="btnGeoEditCustom"  Content="Правка custom-списка…"/>
+              <Button x:Name="btnGeoCopyUrl"     Content="Скопировать PAC URL (для Firefox)"/>
             </StackPanel>
           </StackPanel>
         </Border>
@@ -230,18 +233,18 @@ $xamlText = @'
         <!-- Custom VPN -->
         <Border Style="{StaticResource Card}">
           <StackPanel>
-            <TextBlock Text="Custom VPN / Proxy (your own)" Style="{StaticResource SectionTitle}"/>
-            <TextBlock Style="{StaticResource Hint}" Text="For YOUR OWN trusted VPN/proxy (your VPS, paid VPN, etc.). We deliberately do NOT ship random public proxies — they are honeypots."/>
+            <TextBlock Text="Свой VPN / прокси" Style="{StaticResource SectionTitle}"/>
+            <TextBlock Style="{StaticResource Hint}" Text="Для ТВОЕГО собственного VPN/прокси (свой VPS, платный VPN и т.д.). Случайные публичные прокси мы принципиально НЕ поставляем — это honeypot-ы."/>
             <TextBlock x:Name="lblWgStatus" Margin="0,0,0,8" Foreground="#a0a4ad"/>
             <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
-              <Button x:Name="btnWgImport"        Content="Import WireGuard .conf…"/>
-              <Button x:Name="btnWgStop"          Content="Stop / remove tunnels"/>
-              <Button x:Name="btnWgInstall"       Content="Install WireGuard (winget)"/>
+              <Button x:Name="btnWgImport"        Content="Импорт WireGuard .conf…"/>
+              <Button x:Name="btnWgStop"          Content="Остановить / снять туннели"/>
+              <Button x:Name="btnWgInstall"       Content="Установить WireGuard (winget)"/>
             </StackPanel>
             <StackPanel Orientation="Horizontal">
-              <Button x:Name="btnProxySet"        Content="Set system SOCKS5/HTTP…"/>
-              <Button x:Name="btnProxyDisable"    Content="Disable system proxy"/>
-              <Button x:Name="btnOpenCustomDir"   Content="Open custom-vpn folder"/>
+              <Button x:Name="btnProxySet"        Content="Системный SOCKS5/HTTP…"/>
+              <Button x:Name="btnProxyDisable"    Content="Отключить системный прокси"/>
+              <Button x:Name="btnOpenCustomDir"   Content="Открыть папку custom-vpn"/>
             </StackPanel>
           </StackPanel>
         </Border>
@@ -249,15 +252,15 @@ $xamlText = @'
         <!-- Tools -->
         <Border Style="{StaticResource Card}">
           <StackPanel>
-            <TextBlock Text="Tools" Style="{StaticResource SectionTitle}"/>
+            <TextBlock Text="Инструменты" Style="{StaticResource SectionTitle}"/>
             <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
-              <Button x:Name="btnConnTest"    Content="Run connectivity test"/>
-              <Button x:Name="btnEditCustom"  Content="Edit custom DPI domains"/>
-              <Button x:Name="btnUpdateLists" Content="Update domain lists"/>
+              <Button x:Name="btnConnTest"    Content="Тест соединения"/>
+              <Button x:Name="btnEditCustom"  Content="Правка custom DPI-доменов"/>
+              <Button x:Name="btnUpdateLists" Content="Обновить списки доменов"/>
             </StackPanel>
             <StackPanel Orientation="Horizontal">
-              <Button x:Name="btnDiagnostics" Content="Diagnostics (service.bat)"/>
-              <Button x:Name="btnOpenCli"     Content="Open old CLI launcher"/>
+              <Button x:Name="btnDiagnostics" Content="Диагностика (service.bat)"/>
+              <Button x:Name="btnOpenCli"     Content="Открыть консольный лаунчер"/>
             </StackPanel>
           </StackPanel>
         </Border>
@@ -406,23 +409,23 @@ $Script:WgInstalledExe = $null
 $Script:WgTunnels      = @()
 
 function Update-Status {
-    $bypass = if (Test-WinwsRunning) { 'RUNNING' } else { 'stopped' }
+    $bypass = if (Test-WinwsRunning) { 'РАБОТАЕТ' } else { 'остановлен' }
     $svc    = if (Test-ServiceInstalled 'zapret') {
-                  if (Test-ServiceRunning 'zapret') { 'service running' } else { 'service installed (stopped)' }
-              } else { 'no service' }
+                  if (Test-ServiceRunning 'zapret') { 'служба работает' } else { 'служба установлена (не запущена)' }
+              } else { 'без службы' }
     $warp   = Get-WarpStatus
-    $warpStr = if (-not $warp.Installed) { 'not installed' }
-               elseif ($warp.Connected)  { 'connected' }
-               else                      { 'disconnected' }
+    $warpStr = if (-not $warp.Installed) { 'не установлен' }
+               elseif ($warp.Connected)  { 'подключён' }
+               else                      { 'отключён' }
 
     $pac = Test-PacEnabled $Script:Cfg
     $pacSrv = Test-PacServerRunning
-    $pacStr = if ($pac -and $pacSrv) { 'PAC active' }
-              elseif ($pac)          { 'PAC reg set, server DOWN' }
-              elseif ($pacSrv)       { 'PAC server up (not registered)' }
-              else                   { 'PAC off' }
+    $pacStr = if ($pac -and $pacSrv) { 'PAC активен' }
+              elseif ($pac)          { 'PAC reg есть, сервер УПАЛ' }
+              elseif ($pacSrv)       { 'сервер PAC есть (не зарег.)' }
+              else                   { 'PAC выкл' }
 
-    $Script:lblStatusLine.Text = "Bypass: $bypass   |   Win service: $svc   |   WARP: $warpStr   |   $pacStr"
+    $Script:lblStatusLine.Text = "Bypass: $bypass   |   Win-служба: $svc   |   WARP: $warpStr   |   $pacStr"
     $Script:lblWarpStatus.Text = "WARP: $warpStr"
 
     # Refresh WG cache every ~5th tick (~15 sec) — Get-Service can be slow.
@@ -433,10 +436,10 @@ function Update-Status {
         $Script:WgCacheTick    = 0
     }
     $proxy = Get-SystemProxyStatus
-    $wgLine = "WireGuard: $(if ($Script:WgInstalledExe) { 'installed' } else { 'NOT installed' })"
-    if ($Script:WgTunnels) { $wgLine += "   |   tunnels: $($Script:WgTunnels.Name -join ', ')" }
-    if ($proxy.Enabled) { $wgLine += "   |   system proxy: $($proxy.Server)" }
-    if ($proxy.AutoConfigURL) { $wgLine += "   |   AutoConfigURL set" }
+    $wgLine = "WireGuard: $(if ($Script:WgInstalledExe) { 'установлен' } else { 'НЕ установлен' })"
+    if ($Script:WgTunnels) { $wgLine += "   |   туннели: $($Script:WgTunnels.Name -join ', ')" }
+    if ($proxy.Enabled) { $wgLine += "   |   системный прокси: $($proxy.Server)" }
+    if ($proxy.AutoConfigURL) { $wgLine += "   |   AutoConfigURL установлен" }
     $Script:lblWgStatus.Text = $wgLine
 }
 Update-Status
@@ -489,7 +492,7 @@ function With-BypassBusy([scriptblock]$body) {
 
 # ---- Bypass ----
 function Run-StartMode([string]$mode) {
-    Write-LauncherLog ("Starting (mode={0})..." -f $mode) 'Yellow'
+    Write-LauncherLog ("Старт (режим={0})..." -f $mode) 'Yellow'
     $r = Start-Mode -cfg $Script:Cfg -Mode $mode
     $col = if ($r.Success) { if ($r.Errors.Count -eq 0) { 'Green' } else { 'Yellow' } } else { 'Red' }
     Write-LauncherLog $r.Message $col
@@ -503,16 +506,16 @@ function Run-StartMode([string]$mode) {
 (Find 'btnStartAll' ).Add_Click( (With-BypassBusy { Run-StartMode 'all'  }) )
 
 (Find 'btnStop').Add_Click( (With-BypassBusy {
-    Write-LauncherLog 'Stopping...' 'Yellow'
+    Write-LauncherLog 'Остановка...' 'Yellow'
     Stop-Combined $Script:Cfg
-    Write-LauncherLog 'Stopped.' 'Green'
+    Write-LauncherLog 'Остановлено.' 'Green'
 }) )
 
 (Find 'btnInstallSvc').Add_Click( (Catch-Click {
     $bat = Join-Path $RepoRoot 'service.bat'
-    if (-not (Test-Path -LiteralPath $bat)) { throw "service.bat not found at $bat" }
+    if (-not (Test-Path -LiteralPath $bat)) { throw "service.bat не найден: $bat" }
     Start-Process -FilePath 'cmd.exe' -ArgumentList @('/k', "call `"$bat`"")
-    Write-LauncherLog 'Opened service.bat in a new window — use it to Install/Remove the Windows service.' 'Cyan'
+    Write-LauncherLog 'Открыт service.bat в новом окне — установи/удали Windows-службу оттуда.' 'Cyan'
 }) )
 
 # ---- WARP ----
@@ -570,10 +573,10 @@ function Run-StartMode([string]$mode) {
 (Find 'btnGeoCopyUrl').Add_Click( (Catch-Click {
     $u = Get-PacFileUrl $Script:Cfg
     [System.Windows.Clipboard]::SetText($u)
-    Write-LauncherLog "PAC URL copied to clipboard: $u" 'Cyan'
-    Write-LauncherLog "Firefox: about:preferences -> Network Settings -> Automatic proxy configuration URL -> paste." 'DarkGray'
+    Write-LauncherLog "PAC URL скопирован в буфер: $u" 'Cyan'
+    Write-LauncherLog "Firefox: about:preferences -> Network Settings -> Automatic proxy configuration URL -> вставить." 'DarkGray'
     if (-not (Test-PacServerRunning)) {
-        Write-LauncherLog 'Note: PAC server is not running yet. Press Start (or Connect WARP) first; otherwise Firefox will fail to load the URL.' 'Yellow'
+        Write-LauncherLog 'Внимание: PAC-сервер ещё не запущен. Нажми Старт (или Подключить WARP), иначе Firefox не сможет загрузить URL.' 'Yellow'
     }
 }) )
 
@@ -600,17 +603,17 @@ function Run-StartMode([string]$mode) {
 
 (Find 'btnProxySet').Add_Click( (Catch-Click {
     $p = [Microsoft.VisualBasic.Interaction]::InputBox(
-        "Examples:`r`n  socks=127.0.0.1:1080`r`n  http=proxy.example.com:8080`r`n  myproxy.example.com:3128",
-        'Set system proxy', '')
+        "Примеры:`r`n  socks=127.0.0.1:1080`r`n  http=proxy.example.com:8080`r`n  myproxy.example.com:3128",
+        'Системный прокси', '')
     if ($p) {
         Set-SystemProxy $p
-        Write-LauncherLog "System proxy set: $p" 'Green'
+        Write-LauncherLog "Системный прокси установлен: $p" 'Green'
     }
 }) )
 
 (Find 'btnProxyDisable').Add_Click( (Catch-Click {
     Disable-SystemProxy
-    Write-LauncherLog 'System proxy disabled.' 'Green'
+    Write-LauncherLog 'Системный прокси отключён.' 'Green'
 }) )
 
 (Find 'btnOpenCustomDir').Add_Click( (Catch-Click {
@@ -619,7 +622,7 @@ function Run-StartMode([string]$mode) {
 }) )
 
 # ---- Tools ----
-(Find 'btnEditCustom').Add_Click(  (Catch-Click { Open-CustomDomains; Write-LauncherLog 'Opened lists/list-custom.txt — save and close, then re-Start bypass.' 'DarkGray' }) )
+(Find 'btnEditCustom').Add_Click(  (Catch-Click { Open-CustomDomains; Write-LauncherLog 'Открыт lists/list-custom.txt — сохрани, закрой и перезапусти bypass.' 'DarkGray' }) )
 (Find 'btnUpdateLists').Add_Click( (Catch-Click { Update-Lists }) )
 (Find 'btnDiagnostics').Add_Click( (Catch-Click { Run-Diagnostics }) )
 (Find 'btnOpenCli').Add_Click( (Catch-Click {
@@ -627,12 +630,12 @@ function Run-StartMode([string]$mode) {
     Start-Process -FilePath 'cmd.exe' -ArgumentList @('/k', "call `"$bat`" admin cli")
 }) )
 (Find 'btnConnTest').Add_Click( (Catch-Click {
-    Write-LauncherLog 'Connectivity smoke-test: probing PAC server, WARP proxy, DPI path (youtube), Geo path (chatgpt via WARP)...' 'Yellow'
+    Write-LauncherLog 'Тест соединения: PAC-сервер, WARP-прокси, DPI-путь (youtube), Geo-путь (chatgpt через WARP)...' 'Yellow'
     $t = Test-Connectivity $Script:Cfg
     foreach ($k in 'PacServer','Warp','Dpi','Geo') {
         $row = $t[$k]
         $col = if ($row.Ok) { 'Green' } else { 'Yellow' }
-        $tag = if ($row.Ok) { 'OK' } else { 'FAIL' }
+        $tag = if ($row.Ok) { 'OK  ' } else { 'FAIL' }
         Write-LauncherLog ("{0,-10} [{1}] {2}" -f $k, $tag, $row.Detail) $col
     }
 }) )
@@ -644,10 +647,10 @@ function Run-StartMode([string]$mode) {
 # ============================================================================
 try {
     Apply-Services $Script:Cfg
-    Write-LauncherLog "Loaded config from $ConfigPath" 'DarkGray'
-    Write-LauncherLog "DPI services applied -> lists/list-general-user.txt" 'DarkGray'
+    Write-LauncherLog "Загружен конфиг: $ConfigPath" 'DarkGray'
+    Write-LauncherLog "DPI-сервисы применены -> lists/list-general-user.txt" 'DarkGray'
 } catch {
-    Write-LauncherLog "Startup error: $_" 'Red'
+    Write-LauncherLog "Ошибка при старте: $_" 'Red'
 }
 
 # ============================================================================
